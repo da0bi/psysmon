@@ -423,16 +423,19 @@ class TraceDisplayDlg(psysmon.gui.docking_frame.DockingFrame):
         self.update_display()
 
         # Initialize the plugin preferences and activate default plugins.
-        plugins_to_activate = [('view', 'seismogram')]
+        plugins_to_activate = [('view', 'seismogram'), ('interactive', 'navigate')]
         for cur_plugin in self.plugins:
             cur_plugin.initialize_preferences()
             search_tuple = (cur_plugin.mode,
                             cur_plugin.name)
             if search_tuple in plugins_to_activate:
                 self.logger.debug("Activating plugin {:s}.".format(cur_plugin.name))
-                cur_plugin.activate()
                 if cur_plugin.mode == 'view':
+                    cur_plugin.activate()
                     self.register_view_plugin(cur_plugin)
+                    self.check_menu_checkitem(cur_plugin)
+                elif cur_plugin.mode == 'interactive':
+                    self.activate_interactive_plugin(cur_plugin)
                     self.check_menu_checkitem(cur_plugin)
                 self.call_hook('plugin_activated',
                                plugin_rid = cur_plugin.rid)
@@ -521,6 +524,9 @@ class TraceDisplayDlg(psysmon.gui.docking_frame.DockingFrame):
         # Tell the docking manager to commit all changes.
         self.mgr.Update()
 
+        self.Bind(wx.EVT_CHAR_HOOK, self.on_char_hook)
+        self.Bind(wx.EVT_KEY_UP, self.on_key_up)
+
 
     def on_deactivate_tool(self, event):
         ''' Handle a click of the deactivate tool menu item.
@@ -598,13 +604,51 @@ class TraceDisplayDlg(psysmon.gui.docking_frame.DockingFrame):
         self.update_display()
 
 
-    def swap_tool(self):
+    def is_text_control_focused(self):
+        ''' Check if a text input control currently has keyboard focus.
+        '''
+        focused = wx.Window.FindFocus()
+        if focused is None:
+            return False
+        if isinstance(focused, (wx.TextCtrl, wx.SearchCtrl)):
+            return True
+        class_name = focused.__class__.__name__
+        if any(term in class_name for term in ['Text', 'Spin', 'Picker']):
+            return True
+        return False
+
+
+    def on_char_hook(self, event):
+        ''' Intercept key presses to support press-and-hold interactions like 'z'.
+        '''
+        keyCode = event.GetKeyCode()
+        if keyCode in [ord('Z'), ord('z')]:
+            if not self.is_text_control_focused():
+                self.swap_tool('zoom')
+                return
+        event.Skip()
+
+
+    def on_key_up(self, event):
+        ''' Handle key releases to restore tool state when 'z' is released.
+        '''
+        keyCode = event.GetKeyCode()
+        if keyCode in [ord('Z'), ord('z')]:
+            if self.plugin_to_restore is not None:
+                zoom_plugin = [p for p in self.plugins if p.name == 'zoom']
+                if zoom_plugin and getattr(zoom_plugin[0], 'in_drag', False):
+                    zoom_plugin[0].restore_on_release = True
+                else:
+                    self.restore_tool()
+                return
+        event.Skip()
+
+
+    def swap_tool(self, swap_tool_name = 'zoom'):
         ''' Swap the tool with one defined in the preferences.
         '''
         if self.plugin_to_restore is not None:
             return
-
-        swap_tool_name = 'zoom'
 
         active_plugin = [x for x in self.plugins if x.active is True and x.mode == 'interactive']
         if len(active_plugin) > 1:
@@ -626,12 +670,14 @@ class TraceDisplayDlg(psysmon.gui.docking_frame.DockingFrame):
         self.plugin_to_restore = active_plugin
 
         if active_plugin:
+            self.uncheck_menu_checkitem(active_plugin)
             self.deactivate_interactive_plugin(active_plugin)
         self.activate_interactive_plugin(swap_plugin)
+        self.check_menu_checkitem(swap_plugin)
 
 
     def restore_tool(self):
-        ''' Restore a tool which was previousely swapped.
+        ''' Restore a tool which was previously swapped.
         '''
         active_plugin = [x for x in self.plugins if x.active is True and x.mode == 'interactive']
         if len(active_plugin) == 0:
@@ -640,9 +686,11 @@ class TraceDisplayDlg(psysmon.gui.docking_frame.DockingFrame):
             raise RuntimeError('Only one interactive tool can be active.')
 
         active_plugin = active_plugin[0]
+        self.uncheck_menu_checkitem(active_plugin)
         self.deactivate_interactive_plugin(active_plugin)
         if self.plugin_to_restore is not None:
             self.activate_interactive_plugin(self.plugin_to_restore)
+            self.check_menu_checkitem(self.plugin_to_restore)
             self.plugin_to_restore = None
 
 

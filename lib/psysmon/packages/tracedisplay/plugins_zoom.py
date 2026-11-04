@@ -49,16 +49,18 @@ class Zoom(InteractivePlugin):
         self.logger = psysmon.get_logger(self)
 
         self.icons['active'] = icons.zoom_icon_16
-        self.cursor = wx.CURSOR_MAGNIFIER
+        self.cursor = wx.CURSOR_CROSS
         #self.cursor = icons.zoom_icon_16
         #self.cursor_hotspot = (0.5, 0.5)
 
         self.bg = {}
         self.startTime = None
         self.endTime = None
+        self.in_drag = False
+        self.restore_on_release = False
 
         # Set the shortcut string.
-        self.accelerator_string = 'Z'
+        self.accelerator_string = 'SHIFT+Z'
         self.pref_accelerator_string = 'ALT+Z'
 
         # Accelerators for shortcuts not bound to a menu item.
@@ -185,6 +187,7 @@ class Zoom(InteractivePlugin):
         self.parent.viewport.clear_mpl_event_callbacks(event_name = 'motion_notify_event')
 
         self.bg = {}
+        self.in_drag = False
 
 
 
@@ -207,10 +210,15 @@ class Zoom(InteractivePlugin):
                                                    UTCDateTime(self.endTime))
 
             self.parent.displayManager.parent.update_display()
+            if getattr(self, 'restore_on_release', False):
+                self.restore_on_release = False
+                if hasattr(self.parent, 'restore_tool'):
+                    self.parent.restore_tool()
             return
 
         self.startTime = event.xdata
         self.endTime = event.xdata
+        self.in_drag = True
 
         viewport = self.parent.viewport
         cur_view = event.canvas.GetGrandParent()
@@ -278,4 +286,9 @@ class Zoom(InteractivePlugin):
                                                UTCDateTime(self.endTime))
 
         self.parent.displayManager.parent.update_display()
+
+        if getattr(self, 'restore_on_release', False):
+            self.restore_on_release = False
+            if hasattr(self.parent, 'restore_tool'):
+                self.parent.restore_tool()
 

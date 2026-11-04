@@ -26,6 +26,7 @@ import wx
 import psysmon
 from psysmon.core.plugins import InteractivePlugin
 from psysmon.artwork.icons import iconsBlack16 as icons
+import psysmon.core.preferences_manager as preferences_manager
 
 
 class Navigate(InteractivePlugin):
@@ -84,6 +85,49 @@ class Navigate(InteractivePlugin):
         self.shortcuts['regress_1'] = {'accelerator_string': 'ALT+Left',
                                        'handler': handler}
 
+        # Zoom in shortcuts (Up arrow)
+        handler = ft.partial(self.on_zoom_in, ratio = 20)
+        self.shortcuts['zoom_in_20'] = {'accelerator_string': 'Up',
+                                        'handler': handler}
+
+        handler = ft.partial(self.on_zoom_in, ratio = 25)
+        self.shortcuts['zoom_in_25'] = {'accelerator_string': 'SHIFT+Up',
+                                        'handler': handler}
+
+        handler = ft.partial(self.on_zoom_in, ratio = 10)
+        self.shortcuts['zoom_in_10'] = {'accelerator_string': 'CTRL+Up',
+                                        'handler': handler}
+
+        handler = ft.partial(self.on_zoom_in, ratio = 1)
+        self.shortcuts['zoom_in_1'] = {'accelerator_string': 'ALT+Up',
+                                       'handler': handler}
+
+        # Zoom out shortcuts (Down arrow)
+        handler = ft.partial(self.on_zoom_out, ratio = 20)
+        self.shortcuts['zoom_out_20'] = {'accelerator_string': 'Down',
+                                         'handler': handler}
+
+        handler = ft.partial(self.on_zoom_out, ratio = 25)
+        self.shortcuts['zoom_out_25'] = {'accelerator_string': 'SHIFT+Down',
+                                         'handler': handler}
+
+        handler = ft.partial(self.on_zoom_out, ratio = 10)
+        self.shortcuts['zoom_out_10'] = {'accelerator_string': 'CTRL+Down',
+                                         'handler': handler}
+
+        handler = ft.partial(self.on_zoom_out, ratio = 1)
+        self.shortcuts['zoom_out_1'] = {'accelerator_string': 'ALT+Down',
+                                        'handler': handler}
+
+        # Add the plugin preferences.
+        pref_page = self.pref_manager.add_page('Preferences')
+        resp_group = pref_page.add_group('response')
+
+        item = preferences_manager.IntegerSpinPrefItem(name = 'zoom ratio',
+                                                       value = 20,
+                                                       limit = (1, 99))
+        resp_group.add_item(item)
+
 
     def getHooks(self):
         hooks = {}
@@ -95,27 +139,73 @@ class Navigate(InteractivePlugin):
 
 
     def on_time_advance(self, evt, step):
-        '''
+        ''' Advance displayed time.
         '''
         self.parent.advanceTimePercentage(step = step)
 
 
     def on_time_regress(self, evt, step):
-        '''
+        ''' Regress displayed time.
         '''
         self.parent.decreaseTimePercentage(step = step)
+
+
+    def on_zoom_in(self, evt = None, ratio = None):
+        ''' Zoom in along the time axis.
+        '''
+        if ratio is None:
+            ratio = self.pref_manager.get_value('zoom ratio')
+        self.parent.shrinkTimePeriod(ratio = ratio)
+
+
+    def on_zoom_out(self, evt = None, ratio = None):
+        ''' Zoom out along the time axis.
+        '''
+        if ratio is None:
+            ratio = self.pref_manager.get_value('zoom ratio')
+        self.parent.growTimePeriod(ratio = ratio)
 
 
     def activate(self):
         ''' Activate the plugin.
         '''
         InteractivePlugin.activate(self)
-        self.parent.shortcut_manager.add_shortcut(origin_rid = self.rid,
-                                                  key_combination = ('WXK_DOWN',),
-                                                  action = self.parent.displayManager.show_next_station)
+
+        # Up arrow shortcuts (zoom in)
         self.parent.shortcut_manager.add_shortcut(origin_rid = self.rid,
                                                   key_combination = ('WXK_UP',),
-                                                  action = self.parent.displayManager.show_prev_station)
+                                                  action = self.on_zoom_in)
+        self.parent.shortcut_manager.add_shortcut(origin_rid = self.rid,
+                                                  key_combination = ('WXK_SHIFT', 'WXK_UP'),
+                                                  action = self.parent.shrinkTimePeriod,
+                                                  action_kwargs = {'ratio': 25})
+        self.parent.shortcut_manager.add_shortcut(origin_rid = self.rid,
+                                                  key_combination = ('WXK_COMMAND', 'WXK_UP'),
+                                                  action = self.parent.shrinkTimePeriod,
+                                                  action_kwargs = {'ratio': 10})
+        self.parent.shortcut_manager.add_shortcut(origin_rid = self.rid,
+                                                  key_combination = ('WXK_ALT', 'WXK_UP'),
+                                                  action = self.parent.shrinkTimePeriod,
+                                                  action_kwargs = {'ratio': 1})
+
+        # Down arrow shortcuts (zoom out)
+        self.parent.shortcut_manager.add_shortcut(origin_rid = self.rid,
+                                                  key_combination = ('WXK_DOWN',),
+                                                  action = self.on_zoom_out)
+        self.parent.shortcut_manager.add_shortcut(origin_rid = self.rid,
+                                                  key_combination = ('WXK_SHIFT', 'WXK_DOWN'),
+                                                  action = self.parent.growTimePeriod,
+                                                  action_kwargs = {'ratio': 25})
+        self.parent.shortcut_manager.add_shortcut(origin_rid = self.rid,
+                                                  key_combination = ('WXK_COMMAND', 'WXK_DOWN'),
+                                                  action = self.parent.growTimePeriod,
+                                                  action_kwargs = {'ratio': 10})
+        self.parent.shortcut_manager.add_shortcut(origin_rid = self.rid,
+                                                  key_combination = ('WXK_ALT', 'WXK_DOWN'),
+                                                  action = self.parent.growTimePeriod,
+                                                  action_kwargs = {'ratio': 1})
+
+        # Right arrow shortcuts (advance time)
         self.parent.shortcut_manager.add_shortcut(origin_rid = self.rid,
                                                   key_combination = ('WXK_RIGHT',),
                                                   action = self.parent.advanceTime)
@@ -131,6 +221,8 @@ class Navigate(InteractivePlugin):
                                                   key_combination = ('WXK_ALT', 'WXK_RIGHT'),
                                                   action = self.parent.advanceTimePercentage,
                                                   action_kwargs = {'step': 1})
+
+        # Left arrow shortcuts (regress time)
         self.parent.shortcut_manager.add_shortcut(origin_rid = self.rid,
                                                   key_combination = ('WXK_LEFT',),
                                                   action = self.parent.decreaseTime)

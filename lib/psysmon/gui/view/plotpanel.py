@@ -75,8 +75,8 @@ class PlotPanel(wx.Panel):
         self.Bind(wx.EVT_SET_FOCUS, self.on_set_focus2)
         self.canvas.Bind(wx.EVT_KEY_DOWN, self.on_key_down)
         self.Bind(wx.EVT_KEY_DOWN, self.on_key_down)
-        #self.canvas.Bind(wx.EVT_KEY_UP, self.on_key_up)
-        #self.Bind(wx.EVT_KEY_UP, self.on_key_up)
+        self.canvas.Bind(wx.EVT_KEY_UP, self.on_key_up)
+        self.Bind(wx.EVT_KEY_UP, self.on_key_up)
         #self.Bind(wx.EVT_LEFT_DOWN, self.on_left_down)
         #self.canvas.Bind(wx.EVT_LEFT_DOWN, self.on_left_down)
 

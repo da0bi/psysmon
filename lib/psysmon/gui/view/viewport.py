@@ -57,6 +57,7 @@ class Viewport(wx.lib.scrolledpanel.ScrolledPanel):
         #self.Bind(wx.EVT_LEFT_DOWN, self.on_left_down)
         self.Bind(wx.EVT_SET_FOCUS, self.on_set_focus)
         self.Bind(wx.EVT_KEY_DOWN, self.on_key_down)
+        self.Bind(wx.EVT_KEY_UP, self.on_key_up)
 
 
     def on_left_down(self, event):
@@ -73,6 +74,12 @@ class Viewport(wx.lib.scrolledpanel.ScrolledPanel):
 
     def on_key_down(self, event):
         self.logger.debug("on_key_down in viewport. event: %s", event)
+        event.ResumePropagation(30)
+        event.Skip()
+
+
+    def on_key_up(self, event):
+        self.logger.debug("on_key_up in viewport. event: %s", event)
         event.ResumePropagation(30)
         event.Skip()
 
