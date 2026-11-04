@@ -35,6 +35,7 @@ class DummyParent(object):
         self.update_called = False
         self.plugins = []
         self.plugin_to_restore = None
+        self.collection_node = type('DummyNode', (), {'rid': 'test/node'})()
 
     def update_display(self):
         self.update_called = True
@@ -79,6 +80,12 @@ class DummyParent(object):
     def is_text_control_focused(self):
         return False
 
+    def get_plugin(self, name):
+        return TraceDisplayDlg.get_plugin(self, name)
+
+    def get_active_interactive_plugin(self):
+        return TraceDisplayDlg.get_active_interactive_plugin(self)
+
     def activate_interactive_tool(self, plugin):
         TraceDisplayDlg.activate_interactive_tool(self, plugin)
 
@@ -122,45 +129,71 @@ class CombinedNavZoomTestCase(unittest.TestCase):
         self.assertFalse(zoom.in_drag)
         self.assertFalse(zoom.restore_on_release)
 
-    def test_navigate_arrow_shortcuts(self):
+    def test_navigate_methods_and_shortcuts(self):
         nav = Navigate()
         parent = DummyParent()
         nav.parent = parent
 
-        # Test Up arrow (zoom in)
-        self.assertIn('zoom_in_20', nav.shortcuts)
-        self.assertEqual(nav.shortcuts['zoom_in_20']['accelerator_string'], 'Up')
+        # Test zoom in method
         nav.on_zoom_in(ratio=20)
         self.assertEqual(parent.displayManager.shrink_ratio, 20)
         self.assertTrue(parent.update_called)
 
-        # Test Down arrow (zoom out)
-        self.assertIn('zoom_out_20', nav.shortcuts)
-        self.assertEqual(nav.shortcuts['zoom_out_20']['accelerator_string'], 'Down')
+        # Test zoom out method
         parent.update_called = False
         nav.on_zoom_out(ratio=20)
         self.assertEqual(parent.displayManager.grow_ratio, 20)
         self.assertTrue(parent.update_called)
 
-        # Test Left and Right arrows
-        self.assertIn('advance_100', nav.shortcuts)
-        self.assertEqual(nav.shortcuts['advance_100']['accelerator_string'], 'Right')
-        self.assertIn('regress_100', nav.shortcuts)
-        self.assertEqual(nav.shortcuts['regress_100']['accelerator_string'], 'Left')
+        # Test time advance/regress methods
+        nav.on_time_advance(step=100)
+        self.assertEqual(parent.displayManager.advance_step, 100)
+        nav.on_time_regress(step=100)
+        self.assertEqual(parent.displayManager.decrease_step, 100)
 
-        # Test fine steps
-        self.assertEqual(nav.shortcuts['zoom_in_25']['accelerator_string'], 'SHIFT+Up')
-        self.assertEqual(nav.shortcuts['zoom_in_10']['accelerator_string'], 'CTRL+Up')
-        self.assertEqual(nav.shortcuts['zoom_in_1']['accelerator_string'], 'ALT+Up')
-        self.assertEqual(nav.shortcuts['zoom_out_25']['accelerator_string'], 'SHIFT+Down')
-        self.assertEqual(nav.shortcuts['zoom_out_10']['accelerator_string'], 'CTRL+Down')
-        self.assertEqual(nav.shortcuts['zoom_out_1']['accelerator_string'], 'ALT+Down')
+        # Test activate registers clean primary shortcuts
+        nav.activate()
+        registered = parent.shortcut_manager.get_shortcut(origin_rid=nav.rid)
+        key_combos = [x.key_combination for x in registered]
+        self.assertIn(('WXK_UP',), key_combos)
+        self.assertIn(('WXK_DOWN',), key_combos)
+        self.assertIn(('WXK_LEFT',), key_combos)
+        self.assertIn(('WXK_RIGHT',), key_combos)
+        self.assertIn(('"z"',), key_combos)
+        # Should only have 5 clean shortcuts, not a bloated list
+        self.assertEqual(len(registered), 5)
 
     def test_navigate_preferences(self):
         nav = Navigate()
         item = nav.pref_manager.get_item(name='zoom ratio')
         self.assertIsNotNone(item)
         self.assertEqual(nav.pref_manager.get_value('zoom ratio'), 20)
+
+    def test_navigate_inactive_by_default_and_skipped(self):
+        parent = DummyParent()
+        nav = Navigate()
+        nav.parent = parent
+        zoom = Zoom()
+        zoom.parent = parent
+        parent.plugins = [nav, zoom]
+
+        # By default no interactive plugin is active
+        nav.active = False
+        zoom.active = False
+        self.assertIsNone(parent.get_active_interactive_plugin())
+
+        # Up arrow when inactive must be skipped (not consumed)
+        evt = MockKeyEvent(wx.WXK_UP)
+        TraceDisplayDlg.on_char_hook(parent, evt)
+        self.assertTrue(evt.skipped)
+        self.assertIsNone(parent.displayManager.shrink_ratio)
+
+        # Plain 'z' when inactive must be skipped (not swapped to zoom)
+        evt = MockKeyEvent(ord('z'), shift=False)
+        TraceDisplayDlg.on_char_hook(parent, evt)
+        self.assertTrue(evt.skipped)
+        self.assertFalse(zoom.active)
+        self.assertIsNone(parent.plugin_to_restore)
 
     def test_swap_tool_and_restore_tool(self):
         parent = DummyParent()
@@ -170,7 +203,7 @@ class CombinedNavZoomTestCase(unittest.TestCase):
         zoom.parent = parent
         parent.plugins = [nav, zoom]
 
-        # Initially navigate is active
+        # Navigate is active
         nav.active = True
         zoom.active = False
 
@@ -180,7 +213,7 @@ class CombinedNavZoomTestCase(unittest.TestCase):
         self.assertFalse(nav.active)
         self.assertTrue(zoom.active)
 
-        # Calling swap_tool again while swapped should be a no-op
+        # Calling swap_tool again while swapped should be a no-op (or self-heal)
         TraceDisplayDlg.swap_tool(parent, 'zoom')
         self.assertEqual(parent.plugin_to_restore, nav)
 

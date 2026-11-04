@@ -423,19 +423,16 @@ class TraceDisplayDlg(psysmon.gui.docking_frame.DockingFrame):
         self.update_display()
 
         # Initialize the plugin preferences and activate default plugins.
-        plugins_to_activate = [('view', 'seismogram'), ('interactive', 'navigate')]
+        plugins_to_activate = [('view', 'seismogram')]
         for cur_plugin in self.plugins:
             cur_plugin.initialize_preferences()
             search_tuple = (cur_plugin.mode,
                             cur_plugin.name)
             if search_tuple in plugins_to_activate:
                 self.logger.debug("Activating plugin {:s}.".format(cur_plugin.name))
+                cur_plugin.activate()
                 if cur_plugin.mode == 'view':
-                    cur_plugin.activate()
                     self.register_view_plugin(cur_plugin)
-                    self.check_menu_checkitem(cur_plugin)
-                elif cur_plugin.mode == 'interactive':
-                    self.activate_interactive_plugin(cur_plugin)
                     self.check_menu_checkitem(cur_plugin)
                 self.call_hook('plugin_activated',
                                plugin_rid = cur_plugin.rid)
@@ -618,50 +615,62 @@ class TraceDisplayDlg(psysmon.gui.docking_frame.DockingFrame):
         return False
 
 
+    def get_plugin(self, name):
+        ''' Get a plugin instance by its name.
+        '''
+        plugins = [x for x in self.plugins if x.name == name]
+        return plugins[0] if plugins else None
+
+
+    def get_active_interactive_plugin(self):
+        ''' Get the currently active interactive plugin, or None.
+        '''
+        active = [x for x in self.plugins if x.active is True and x.mode == 'interactive']
+        return active[0] if active else None
+
+
     def on_char_hook(self, event):
         ''' Intercept key presses to support press-and-hold interactions like 'z'
         and combined navigation/zoom arrow keys.
         '''
-        keyCode = event.GetKeyCode()
         if self.is_text_control_focused():
             event.Skip()
             return
 
-        if keyCode in [ord('Z'), ord('z')]:
-            if event.ShiftDown():
-                # Shift+Z: Permanently switch to the Zoom tool
-                zoom_plugin = [p for p in self.plugins if p.name == 'zoom']
-                if zoom_plugin:
-                    self.activate_interactive_tool(zoom_plugin[0])
-                return
-            elif not event.ControlDown() and not event.AltDown():
-                # Plain Z: Temporary hold-to-zoom
+        keyCode = event.GetKeyCode()
+
+        # Shift+Z: Permanently switch to the Zoom tool from anywhere
+        if keyCode in [ord('Z'), ord('z')] and event.ShiftDown():
+            zoom_plugin = self.get_plugin('zoom')
+            if zoom_plugin:
+                self.activate_interactive_tool(zoom_plugin)
+            return
+
+        active_plugin = self.get_active_interactive_plugin()
+
+        # Combined Zoom & Navigate interactions (strictly active when Navigate is active)
+        if active_plugin and active_plugin.name == 'navigate':
+            # Plain Z: Temporary hold-to-zoom
+            if keyCode in [ord('Z'), ord('z')] and not event.ControlDown() and not event.AltDown():
                 self.swap_tool('zoom')
                 return
 
-        # Check arrow keys for combined navigate/zoom tool
-        active_plugin = [x for x in self.plugins if x.active is True and x.mode == 'interactive']
-        active_plugin = active_plugin[0] if active_plugin else None
-        nav_plugin = [p for p in self.plugins if p.name == 'navigate']
-        nav_plugin = nav_plugin[0] if nav_plugin else None
-
-        if (active_plugin and active_plugin.name == 'navigate') or (active_plugin is None and nav_plugin):
-            target_nav = active_plugin if active_plugin else nav_plugin
+            # Arrow keys: Navigate time or zoom
             if keyCode == wx.WXK_UP:
                 ratio = 1 if event.AltDown() else (10 if event.ControlDown() else (25 if event.ShiftDown() else None))
-                target_nav.on_zoom_in(ratio = ratio)
+                active_plugin.on_zoom_in(ratio = ratio)
                 return
             elif keyCode == wx.WXK_DOWN:
                 ratio = 1 if event.AltDown() else (10 if event.ControlDown() else (25 if event.ShiftDown() else None))
-                target_nav.on_zoom_out(ratio = ratio)
+                active_plugin.on_zoom_out(ratio = ratio)
                 return
             elif keyCode == wx.WXK_LEFT:
                 step = 1 if event.AltDown() else (10 if event.ControlDown() else (25 if event.ShiftDown() else 100))
-                target_nav.on_time_regress(evt = None, step = step)
+                active_plugin.on_time_regress(evt = None, step = step)
                 return
             elif keyCode == wx.WXK_RIGHT:
                 step = 1 if event.AltDown() else (10 if event.ControlDown() else (25 if event.ShiftDown() else 100))
-                target_nav.on_time_advance(evt = None, step = step)
+                active_plugin.on_time_advance(evt = None, step = step)
                 return
 
         event.Skip()
@@ -673,9 +682,9 @@ class TraceDisplayDlg(psysmon.gui.docking_frame.DockingFrame):
         keyCode = event.GetKeyCode()
         if keyCode in [ord('Z'), ord('z')]:
             if self.plugin_to_restore is not None:
-                zoom_plugin = [p for p in self.plugins if p.name == 'zoom']
-                if zoom_plugin and getattr(zoom_plugin[0], 'in_drag', False):
-                    zoom_plugin[0].restore_on_release = True
+                zoom_plugin = self.get_plugin('zoom')
+                if zoom_plugin and getattr(zoom_plugin, 'in_drag', False):
+                    zoom_plugin.restore_on_release = True
                 else:
                     self.restore_tool()
                 return
@@ -686,11 +695,8 @@ class TraceDisplayDlg(psysmon.gui.docking_frame.DockingFrame):
         ''' Permanently activate an interactive tool and synchronize UI state.
         '''
         self.plugin_to_restore = None
-        active_plugin = [x for x in self.plugins if x.active is True and x.mode == 'interactive']
-        if len(active_plugin) > 1:
-            raise RuntimeError('Only one interactive tool can be active.')
-        elif len(active_plugin) == 1:
-            active_plugin = active_plugin[0]
+        active_plugin = self.get_active_interactive_plugin()
+        if active_plugin is not None:
             if active_plugin == plugin:
                 return
             self.uncheck_menu_checkitem(active_plugin)
@@ -714,22 +720,15 @@ class TraceDisplayDlg(psysmon.gui.docking_frame.DockingFrame):
             else:
                 return
 
-        active_plugin = [x for x in self.plugins if x.active is True and x.mode == 'interactive']
-        if len(active_plugin) > 1:
-            raise RuntimeError('Only one interactive tool can be active.')
-        try:
-            active_plugin = active_plugin[0]
-        except:
-            active_plugin = None
+        active_plugin = self.get_active_interactive_plugin()
 
         if active_plugin is not None and active_plugin.name == swap_tool_name:
             # The swap tool is already active.
             return
 
-        swap_plugin = [x for x in self.plugins if x.name == swap_tool_name]
-        if len(swap_plugin) != 1:
+        swap_plugin = self.get_plugin(swap_tool_name)
+        if swap_plugin is None:
             raise RuntimeError("Can't find the swap plugin.")
-        swap_plugin = swap_plugin[0]
 
         self.plugin_to_restore = active_plugin
 
@@ -743,14 +742,11 @@ class TraceDisplayDlg(psysmon.gui.docking_frame.DockingFrame):
     def restore_tool(self):
         ''' Restore a tool which was previously swapped.
         '''
-        active_plugin = [x for x in self.plugins if x.active is True and x.mode == 'interactive']
-        if len(active_plugin) == 0:
+        active_plugin = self.get_active_interactive_plugin()
+        if active_plugin is None:
             self.plugin_to_restore = None
             return
-        elif len(active_plugin) > 1:
-            raise RuntimeError('Only one interactive tool can be active.')
 
-        active_plugin = active_plugin[0]
         self.uncheck_menu_checkitem(active_plugin)
         self.deactivate_interactive_plugin(active_plugin)
         if self.plugin_to_restore is not None:
@@ -762,16 +758,10 @@ class TraceDisplayDlg(psysmon.gui.docking_frame.DockingFrame):
     def deactivate_tool(self):
         ''' Deactivate the currently active interactive plugin.
         '''
-        active_plugin = [x for x in self.plugins if x.active is True and x.mode == 'interactive']
-
-        if len(active_plugin) == 0:
-            return
-        elif len(active_plugin) > 1:
-            raise RuntimeError('Only one interactive tool can be active.')
-
-        active_plugin = active_plugin[0]
-        self.uncheck_menu_checkitem(active_plugin)
-        self.deactivate_interactive_plugin(active_plugin)
+        active_plugin = self.get_active_interactive_plugin()
+        if active_plugin is not None:
+            self.uncheck_menu_checkitem(active_plugin)
+            self.deactivate_interactive_plugin(active_plugin)
 
 
 

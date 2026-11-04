@@ -210,10 +210,7 @@ class Zoom(InteractivePlugin):
                                                    UTCDateTime(self.endTime))
 
             self.parent.displayManager.parent.update_display()
-            if getattr(self, 'restore_on_release', False):
-                self.restore_on_release = False
-                if hasattr(self.parent, 'restore_tool'):
-                    self.parent.restore_tool()
+            self.check_restore_tool()
             return
 
         self.startTime = event.xdata
@@ -286,8 +283,12 @@ class Zoom(InteractivePlugin):
                                                UTCDateTime(self.endTime))
 
         self.parent.displayManager.parent.update_display()
+        self.check_restore_tool()
 
-        # Check if the tool was temporarily swapped
+
+    def check_restore_tool(self):
+        ''' Check whether to restore a swapped tool.
+        '''
         if getattr(self.parent, 'plugin_to_restore', None) is not None:
             z_down = False
             try:
