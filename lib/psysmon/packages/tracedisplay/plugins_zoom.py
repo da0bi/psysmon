@@ -287,7 +287,20 @@ class Zoom(InteractivePlugin):
 
         self.parent.displayManager.parent.update_display()
 
-        if getattr(self, 'restore_on_release', False):
+        # Check if the tool was temporarily swapped
+        if getattr(self.parent, 'plugin_to_restore', None) is not None:
+            z_down = False
+            try:
+                z_down = wx.GetKeyState(ord('Z')) or wx.GetKeyState(ord('z'))
+            except Exception:
+                pass
+            if not z_down:
+                self.restore_on_release = False
+                if hasattr(self.parent, 'restore_tool'):
+                    self.parent.restore_tool()
+            else:
+                self.restore_on_release = True
+        elif getattr(self, 'restore_on_release', False):
             self.restore_on_release = False
             if hasattr(self.parent, 'restore_tool'):
                 self.parent.restore_tool()

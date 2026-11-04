@@ -76,6 +76,43 @@ class DummyParent(object):
         plugin.active = True
 
 
+    def is_text_control_focused(self):
+        return False
+
+    def activate_interactive_tool(self, plugin):
+        TraceDisplayDlg.activate_interactive_tool(self, plugin)
+
+    def swap_tool(self, name='zoom'):
+        TraceDisplayDlg.swap_tool(self, name)
+
+    def restore_tool(self):
+        TraceDisplayDlg.restore_tool(self)
+
+
+class MockKeyEvent(object):
+    def __init__(self, key_code, shift=False, ctrl=False, alt=False):
+        self.key_code = key_code
+        self.shift = shift
+        self.ctrl = ctrl
+        self.alt = alt
+        self.skipped = False
+
+    def GetKeyCode(self):
+        return self.key_code
+
+    def ShiftDown(self):
+        return self.shift
+
+    def ControlDown(self):
+        return self.ctrl
+
+    def AltDown(self):
+        return self.alt
+
+    def Skip(self):
+        self.skipped = True
+
+
 class CombinedNavZoomTestCase(unittest.TestCase):
 
     def test_zoom_cursor_and_accelerator(self):
@@ -167,17 +204,136 @@ class CombinedNavZoomTestCase(unittest.TestCase):
 
         # Simulate user in drag when 'z' is released
         zoom.in_drag = True
-        class MockKeyEvent(object):
-            def GetKeyCode(self):
-                return ord('z')
-            def Skip(self):
-                pass
-
         # Key release while dragging sets restore_on_release flag
-        TraceDisplayDlg.on_key_up(parent, MockKeyEvent())
+        TraceDisplayDlg.on_key_up(parent, MockKeyEvent(ord('z')))
         self.assertTrue(zoom.restore_on_release)
         # Still in zoom because mouse drag hasn't finished
         self.assertTrue(zoom.active)
+
+    def test_on_char_hook_arrows_zoom_and_navigate(self):
+        parent = DummyParent()
+        nav = Navigate()
+        nav.parent = parent
+        zoom = Zoom()
+        zoom.parent = parent
+        parent.plugins = [nav, zoom]
+        nav.active = True
+
+        # Plain Up arrow -> zoom in with default ratio (20)
+        evt = MockKeyEvent(wx.WXK_UP)
+        TraceDisplayDlg.on_char_hook(parent, evt)
+        self.assertFalse(evt.skipped)
+        self.assertEqual(parent.displayManager.shrink_ratio, 20)
+
+        # Shift+Up arrow -> zoom in with ratio 25
+        evt = MockKeyEvent(wx.WXK_UP, shift=True)
+        TraceDisplayDlg.on_char_hook(parent, evt)
+        self.assertFalse(evt.skipped)
+        self.assertEqual(parent.displayManager.shrink_ratio, 25)
+
+        # Ctrl+Up arrow -> zoom in with ratio 10
+        evt = MockKeyEvent(wx.WXK_UP, ctrl=True)
+        TraceDisplayDlg.on_char_hook(parent, evt)
+        self.assertFalse(evt.skipped)
+        self.assertEqual(parent.displayManager.shrink_ratio, 10)
+
+        # Alt+Up arrow -> zoom in with ratio 1
+        evt = MockKeyEvent(wx.WXK_UP, alt=True)
+        TraceDisplayDlg.on_char_hook(parent, evt)
+        self.assertFalse(evt.skipped)
+        self.assertEqual(parent.displayManager.shrink_ratio, 1)
+
+        # Plain Down arrow -> zoom out with default ratio (20)
+        evt = MockKeyEvent(wx.WXK_DOWN)
+        TraceDisplayDlg.on_char_hook(parent, evt)
+        self.assertFalse(evt.skipped)
+        self.assertEqual(parent.displayManager.grow_ratio, 20)
+
+        # Plain Left arrow -> regress time step 100
+        evt = MockKeyEvent(wx.WXK_LEFT)
+        TraceDisplayDlg.on_char_hook(parent, evt)
+        self.assertFalse(evt.skipped)
+        self.assertEqual(parent.displayManager.decrease_step, 100)
+
+        # Plain Right arrow -> advance time step 100
+        evt = MockKeyEvent(wx.WXK_RIGHT)
+        TraceDisplayDlg.on_char_hook(parent, evt)
+        self.assertFalse(evt.skipped)
+        self.assertEqual(parent.displayManager.advance_step, 100)
+
+    def test_on_char_hook_shift_z_permanent_selection(self):
+        parent = DummyParent()
+        nav = Navigate()
+        nav.parent = parent
+        zoom = Zoom()
+        zoom.parent = parent
+        parent.plugins = [nav, zoom]
+        nav.active = True
+
+        # Shift+Z should activate Zoom permanently
+        evt = MockKeyEvent(ord('z'), shift=True)
+        TraceDisplayDlg.on_char_hook(parent, evt)
+        self.assertFalse(evt.skipped)
+        self.assertTrue(zoom.active)
+        self.assertFalse(nav.active)
+        self.assertIsNone(parent.plugin_to_restore)
+
+        # Releasing 'z' does NOT restore because it was permanent
+        TraceDisplayDlg.on_key_up(parent, MockKeyEvent(ord('z')))
+        self.assertTrue(zoom.active)
+        self.assertFalse(nav.active)
+
+    def test_consecutive_z_hold_swaps(self):
+        parent = DummyParent()
+        nav = Navigate()
+        nav.parent = parent
+        zoom = Zoom()
+        zoom.parent = parent
+        parent.plugins = [nav, zoom]
+        nav.active = True
+
+        # First press-and-hold Z
+        TraceDisplayDlg.on_char_hook(parent, MockKeyEvent(ord('z'), shift=False))
+        self.assertTrue(zoom.active)
+        self.assertFalse(nav.active)
+        self.assertEqual(parent.plugin_to_restore, nav)
+
+        # Release Z
+        TraceDisplayDlg.on_key_up(parent, MockKeyEvent(ord('z')))
+        self.assertFalse(zoom.active)
+        self.assertTrue(nav.active)
+        self.assertIsNone(parent.plugin_to_restore)
+
+        # Second press-and-hold Z (verifies issue 2 is fixed!)
+        TraceDisplayDlg.on_char_hook(parent, MockKeyEvent(ord('z'), shift=False))
+        self.assertTrue(zoom.active)
+        self.assertFalse(nav.active)
+        self.assertEqual(parent.plugin_to_restore, nav)
+
+        # Release Z again
+        TraceDisplayDlg.on_key_up(parent, MockKeyEvent(ord('z')))
+        self.assertFalse(zoom.active)
+        self.assertTrue(nav.active)
+        self.assertIsNone(parent.plugin_to_restore)
+
+    def test_swap_tool_recovers_from_stale_state(self):
+        parent = DummyParent()
+        nav = Navigate()
+        nav.parent = parent
+        zoom = Zoom()
+        zoom.parent = parent
+        parent.plugins = [nav, zoom]
+        nav.active = True
+
+        # Simulate stuck swap state where zoom is active and plugin_to_restore is set
+        TraceDisplayDlg.swap_tool(parent, 'zoom')
+        self.assertEqual(parent.plugin_to_restore, nav)
+
+        # In non-interactive test environment where Z is not physically held,
+        # calling swap_tool again detects the stale state, recovers, and re-swaps cleanly
+        TraceDisplayDlg.swap_tool(parent, 'zoom')
+        self.assertTrue(zoom.active)
+        self.assertEqual(parent.plugin_to_restore, nav)
 
 
 if __name__ == '__main__':

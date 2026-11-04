@@ -109,12 +109,12 @@ class PlotPanel(wx.Panel):
         
     def on_key_down(self, event):
         self.logger.debug("on_key_down in plot_panel %s. id: %s; event: %s", self.name, self.GetId(), event)
-        event.ResumePropagation(1)
+        event.ResumePropagation(30)
         event.Skip()
 
     def on_key_up(self, event):
         self.logger.debug("on_key_up in plot_panel %s. event: %s", self.name, event)
-        event.ResumePropagation(1)
+        event.ResumePropagation(30)
         event.Skip()
 
     def on_left_down(self, event):
