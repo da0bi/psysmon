@@ -500,17 +500,71 @@ class CombinedNavZoomTestCase(unittest.TestCase):
 
         # Mock mouse event button 3 (right-click)
         class MockMouseEvent(object):
-            def __init__(self, button, xdata):
+            def __init__(self, button, xdata=1500.0):
                 self.button = button
                 self.xdata = xdata
 
         evt = MockMouseEvent(button=3, xdata=1500.0)
+        # Press right mouse button: restores previous view
         zoom.onButtonPress(evt)
-
-        # Should have restored previous zoom state via undo_zoom
         self.assertEqual(parent.displayManager.startTime, UTCDateTime(1000.0))
         self.assertEqual(parent.displayManager.endTime, UTCDateTime(2000.0))
         self.assertFalse(parent.has_zoom_history())
+
+        # Release right mouse button: must NOT trigger a zoom-in or overwrite the reset
+        zoom.onButtonRelease(evt)
+        self.assertEqual(parent.displayManager.startTime, UTCDateTime(1000.0))
+        self.assertEqual(parent.displayManager.endTime, UTCDateTime(2000.0))
+        self.assertFalse(parent.has_zoom_history())
+
+    def test_hold_z_right_click_then_release_z(self):
+        parent = DummyParent()
+        nav = Navigate()
+        nav.parent = parent
+        zoom = Zoom()
+        zoom.parent = parent
+        parent.plugins = [nav, zoom]
+        nav.active = True
+
+        parent.displayManager.startTime = 1000.0
+        parent.displayManager.endTime = 2000.0
+        parent.push_zoom_history()
+
+        parent.displayManager.startTime = 1200.0
+        parent.displayManager.endTime = 1800.0
+
+        # 1. User holds 'z': swaps to zoom
+        TraceDisplayDlg.on_char_hook(parent, MockKeyEvent(ord('z'), shift=False))
+        self.assertTrue(zoom.active)
+        self.assertFalse(nav.active)
+        self.assertEqual(parent.plugin_to_restore, nav)
+
+        class MockMouseEvent(object):
+            def __init__(self, button, xdata=1500.0):
+                self.button = button
+                self.xdata = xdata
+
+        evt = MockMouseEvent(button=3, xdata=1500.0)
+
+        # 2. User right clicks (press and release while holding 'z')
+        zoom.onButtonPress(evt)
+        self.assertEqual(parent.displayManager.startTime, UTCDateTime(1000.0))
+        self.assertEqual(parent.displayManager.endTime, UTCDateTime(2000.0))
+
+        zoom.onButtonRelease(evt)
+        self.assertEqual(parent.displayManager.startTime, UTCDateTime(1000.0))
+        self.assertEqual(parent.displayManager.endTime, UTCDateTime(2000.0))
+        # Zoom tool is still active while 'z' is held
+        self.assertTrue(zoom.active)
+
+        # 3. User releases 'z': restores Navigate cleanly
+        TraceDisplayDlg.on_key_up(parent, MockKeyEvent(ord('z')))
+        self.assertFalse(zoom.active)
+        self.assertTrue(nav.active)
+        self.assertIsNone(parent.plugin_to_restore)
+        # View remains at the undone zoom state
+        self.assertEqual(parent.displayManager.startTime, UTCDateTime(1000.0))
+        self.assertEqual(parent.displayManager.endTime, UTCDateTime(2000.0))
 
     def test_reset_view_clears_zoom_history(self):
         parent = DummyParent()
@@ -533,7 +587,13 @@ class CombinedNavZoomTestCase(unittest.TestCase):
 
         zoom.startTime = 1200.0
         zoom.endTime = 1600.0
-        zoom.onButtonRelease(None)
+        zoom.in_drag = True
+
+        class MockButton1Event(object):
+            def __init__(self):
+                self.button = 1
+
+        zoom.onButtonRelease(MockButton1Event())
 
         # Current view should be updated
         self.assertEqual(parent.displayManager.startTime, UTCDateTime(1200.0))

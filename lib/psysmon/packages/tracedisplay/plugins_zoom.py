@@ -201,7 +201,6 @@ class Zoom(InteractivePlugin):
             # If zoom history is available, restore the previous zoom state.
             if hasattr(self.parent, 'has_zoom_history') and self.parent.has_zoom_history():
                 self.parent.undo_zoom()
-                self.check_restore_tool()
                 return
 
             # Use the right mouse button to zoom out.
@@ -216,7 +215,6 @@ class Zoom(InteractivePlugin):
                                                    UTCDateTime(self.endTime))
 
             self.parent.displayManager.parent.update_display()
-            self.check_restore_tool()
             return
 
         self.startTime = event.xdata
@@ -268,6 +266,14 @@ class Zoom(InteractivePlugin):
     def onButtonRelease(self, event, parent = None):
         self.logger.debug('onButtonRelease')
 
+        # Right-click release: no-op (zoom undo occurs on button press)
+        if getattr(event, 'button', None) == 3:
+            return
+
+        # Only button 1 (left mouse button) during active drag performs zoom-in
+        if getattr(event, 'button', None) != 1 or not getattr(self, 'in_drag', False):
+            return
+
         self.cleanup()
 
         # Call the setTimeLimits of the displayManager.
@@ -308,8 +314,6 @@ class Zoom(InteractivePlugin):
                 self.restore_on_release = False
                 if hasattr(self.parent, 'restore_tool'):
                     self.parent.restore_tool()
-            else:
-                self.restore_on_release = True
         elif getattr(self, 'restore_on_release', False):
             self.restore_on_release = False
             if hasattr(self.parent, 'restore_tool'):
