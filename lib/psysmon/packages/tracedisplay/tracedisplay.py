@@ -419,6 +419,10 @@ class TraceDisplayDlg(psysmon.gui.docking_frame.DockingFrame):
         # A temporary plugin register to swap two plugins.
         self.plugin_to_restore = None
 
+        # Zoom history stack for multi-level zoom undo/reset.
+        self.zoom_history = []
+        self.max_zoom_history = 3
+
         # Update the display to create all necessary containers.
         self.update_display()
 
@@ -490,6 +494,12 @@ class TraceDisplayDlg(psysmon.gui.docking_frame.DockingFrame):
                            help_string = "Disable the currently active tool.",
                            handler = self.on_deactivate_tool,
                            accelerator_string = 'ESC')
+
+        self.add_menu_item(parent_menu = 'Control',
+                           title = 'Undo Zoom',
+                           help_string = "Step backward through interactive zoom history.",
+                           handler = lambda evt: self.undo_zoom(),
+                           accelerator_string = 'CTRL+Z')
 
         
         # Initialize the menubar using the loaded plugins.
@@ -639,6 +649,14 @@ class TraceDisplayDlg(psysmon.gui.docking_frame.DockingFrame):
 
         keyCode = event.GetKeyCode()
 
+        cmd_down = event.CmdDown() if hasattr(event, 'CmdDown') else False
+        ctrl_down = event.ControlDown() or cmd_down
+
+        # Ctrl+Z / Cmd+Z: Undo / reset last zoom step from anywhere
+        if keyCode in [ord('Z'), ord('z')] and ctrl_down and not event.ShiftDown():
+            if self.undo_zoom():
+                return
+
         # Shift+Z: Permanently switch to the Zoom tool from anywhere
         if keyCode in [ord('Z'), ord('z')] and event.ShiftDown():
             zoom_plugin = self.get_plugin('zoom')
@@ -651,7 +669,7 @@ class TraceDisplayDlg(psysmon.gui.docking_frame.DockingFrame):
         # Combined Zoom & Navigate interactions (strictly active when Navigate is active)
         if active_plugin and active_plugin.name == 'navigate':
             # Plain Z: Temporary hold-to-zoom
-            if keyCode in [ord('Z'), ord('z')] and not event.ControlDown() and not event.AltDown():
+            if keyCode in [ord('Z'), ord('z')] and not ctrl_down and not event.AltDown():
                 self.swap_tool('zoom')
                 return
 
@@ -816,8 +834,65 @@ class TraceDisplayDlg(psysmon.gui.docking_frame.DockingFrame):
 
         if target_start is not None and target_duration is not None:
             self.logger.debug("Resetting view to start: %s, duration: %s", target_start, target_duration)
+            if hasattr(self, 'clear_zoom_history'):
+                self.clear_zoom_history()
             self.displayManager.setTimeLimits(target_start, target_start + target_duration)
             self.update_display()
+
+
+    def push_zoom_history(self, start_time = None, end_time = None):
+        ''' Save the current or specified time limits onto the zoom history stack.
+        '''
+        if start_time is None:
+            start_time = self.displayManager.startTime
+        if end_time is None:
+            end_time = self.displayManager.endTime
+        if start_time is None or end_time is None:
+            return
+
+        nav_plugin = self.get_plugin('navigate')
+        max_depth = 3
+        if nav_plugin and len(nav_plugin.pref_manager) > 0:
+            try:
+                max_depth = nav_plugin.pref_manager.get_value('zoom_history_steps')
+            except Exception:
+                max_depth = 3
+
+        new_entry = (UTCDateTime(start_time), UTCDateTime(end_time))
+        if self.zoom_history and self.zoom_history[-1] == new_entry:
+            return
+
+        self.zoom_history.append(new_entry)
+        while len(self.zoom_history) > max_depth:
+            self.zoom_history.pop(0)
+
+
+    def undo_zoom(self):
+        ''' Restore the previous zoom state from the history stack.
+        '''
+        if not self.zoom_history:
+            return False
+
+        prev_start, prev_end = self.zoom_history.pop()
+        self.logger.debug("Undoing zoom to start: %s, end: %s", prev_start, prev_end)
+        self.displayManager.setTimeLimits(prev_start, prev_end)
+        self.update_display()
+        remaining = len(self.zoom_history)
+        if hasattr(self, 'statusbar') and self.statusbar is not None:
+            self.statusbar.set_shortcut_tips_msg("Zoom reset ({:d} remaining)".format(remaining))
+        return True
+
+
+    def has_zoom_history(self):
+        ''' Check if any zoom history entries exist.
+        '''
+        return len(self.zoom_history) > 0
+
+
+    def clear_zoom_history(self):
+        ''' Clear the zoom history stack.
+        '''
+        self.zoom_history.clear()
 
 
     def onKeyDown(self, event):

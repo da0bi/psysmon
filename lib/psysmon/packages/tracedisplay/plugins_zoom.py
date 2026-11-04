@@ -198,6 +198,12 @@ class Zoom(InteractivePlugin):
             # Skip the middle mouse button.
             return
         elif event.button == 3:
+            # If zoom history is available, restore the previous zoom state.
+            if hasattr(self.parent, 'has_zoom_history') and self.parent.has_zoom_history():
+                self.parent.undo_zoom()
+                self.check_restore_tool()
+                return
+
             # Use the right mouse button to zoom out.
             self.startTime = event.xdata
             ratio = self.pref_manager.get_value('zoom ratio')
@@ -278,6 +284,9 @@ class Zoom(InteractivePlugin):
             tmp = self.startTime
             self.startTime = self.endTime
             self.endTime = tmp
+
+        if hasattr(self.parent, 'push_zoom_history'):
+            self.parent.push_zoom_history()
 
         self.parent.displayManager.setTimeLimits(UTCDateTime(self.startTime),
                                                UTCDateTime(self.endTime))

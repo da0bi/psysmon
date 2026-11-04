@@ -2,17 +2,25 @@ import unittest
 import wx
 import psysmon
 import psysmon.packages.tracedisplay.tracedisplay as tracedisplay
+from obspy.core.utcdatetime import UTCDateTime
 from psysmon.packages.tracedisplay.plugins_navigate import Navigate
 from psysmon.packages.tracedisplay.plugins_zoom import Zoom
 from psysmon.packages.tracedisplay.tracedisplay import TraceDisplayDlg
 
 
 class DummyDisplayManager(object):
-    def __init__(self):
+    def __init__(self, startTime=1000.0, endTime=2000.0):
+        self.startTime = startTime
+        self.endTime = endTime
         self.shrink_ratio = None
         self.grow_ratio = None
         self.advance_step = None
         self.decrease_step = None
+        self.parent = None
+
+    def setTimeLimits(self, startTime, endTime):
+        self.startTime = startTime
+        self.endTime = endTime
 
     def shrinkTimePeriod(self, ratio=50):
         self.shrink_ratio = ratio
@@ -30,12 +38,17 @@ class DummyDisplayManager(object):
 class DummyParent(object):
     def __init__(self):
         self.displayManager = DummyDisplayManager()
+        self.displayManager.parent = self
         from psysmon.gui.shortcut import ShortcutManager
         self.shortcut_manager = ShortcutManager()
         self.update_called = False
         self.plugins = []
         self.plugin_to_restore = None
         self.collection_node = type('DummyNode', (), {'rid': 'test/node'})()
+        self.zoom_history = []
+        self.max_zoom_history = 3
+        self.logger = psysmon.get_logger(self)
+        self.statusbar = type('DummyStatusbar', (), {'set_shortcut_tips_msg': lambda s, msg: None})()
 
     def update_display(self):
         self.update_called = True
@@ -76,7 +89,6 @@ class DummyParent(object):
     def activate_interactive_plugin(self, plugin):
         plugin.active = True
 
-
     def is_text_control_focused(self):
         return False
 
@@ -95,13 +107,26 @@ class DummyParent(object):
     def restore_tool(self):
         TraceDisplayDlg.restore_tool(self)
 
+    def push_zoom_history(self, start_time = None, end_time = None):
+        return TraceDisplayDlg.push_zoom_history(self, start_time, end_time)
+
+    def undo_zoom(self):
+        return TraceDisplayDlg.undo_zoom(self)
+
+    def has_zoom_history(self):
+        return TraceDisplayDlg.has_zoom_history(self)
+
+    def clear_zoom_history(self):
+        return TraceDisplayDlg.clear_zoom_history(self)
+
 
 class MockKeyEvent(object):
-    def __init__(self, key_code, shift=False, ctrl=False, alt=False):
+    def __init__(self, key_code, shift=False, ctrl=False, alt=False, cmd=False):
         self.key_code = key_code
         self.shift = shift
         self.ctrl = ctrl
         self.alt = alt
+        self.cmd = cmd
         self.skipped = False
 
     def GetKeyCode(self):
@@ -112,6 +137,9 @@ class MockKeyEvent(object):
 
     def ControlDown(self):
         return self.ctrl
+
+    def CmdDown(self):
+        return self.cmd
 
     def AltDown(self):
         return self.alt
@@ -160,14 +188,17 @@ class CombinedNavZoomTestCase(unittest.TestCase):
         self.assertIn(('WXK_LEFT',), key_combos)
         self.assertIn(('WXK_RIGHT',), key_combos)
         self.assertIn(('"z"',), key_combos)
-        # Should only have 5 clean shortcuts, not a bloated list
-        self.assertEqual(len(registered), 5)
+        self.assertIn(('Ctrl+Z',), key_combos)
+        self.assertEqual(len(registered), 6)
 
     def test_navigate_preferences(self):
         nav = Navigate()
         item = nav.pref_manager.get_item(name='zoom ratio')
         self.assertIsNotNone(item)
         self.assertEqual(nav.pref_manager.get_value('zoom ratio'), 20)
+        history_item = nav.pref_manager.get_item(name='zoom_history_steps')
+        self.assertIsNotNone(history_item)
+        self.assertEqual(nav.pref_manager.get_value('zoom_history_steps'), 3)
 
     def test_navigate_inactive_by_default_and_skipped(self):
         parent = DummyParent()
@@ -362,11 +393,154 @@ class CombinedNavZoomTestCase(unittest.TestCase):
         TraceDisplayDlg.swap_tool(parent, 'zoom')
         self.assertEqual(parent.plugin_to_restore, nav)
 
-        # In non-interactive test environment where Z is not physically held,
-        # calling swap_tool again detects the stale state, recovers, and re-swaps cleanly
+        # Calling swap_tool again detects the stale state, recovers, and re-swaps cleanly
         TraceDisplayDlg.swap_tool(parent, 'zoom')
         self.assertTrue(zoom.active)
         self.assertEqual(parent.plugin_to_restore, nav)
+
+    def test_push_and_undo_zoom_history(self):
+        parent = DummyParent()
+        parent.displayManager.startTime = 1000.0
+        parent.displayManager.endTime = 2000.0
+
+        # Push state 1
+        parent.push_zoom_history()
+        self.assertTrue(parent.has_zoom_history())
+        self.assertEqual(len(parent.zoom_history), 1)
+
+        # Move to state 2 and push
+        parent.displayManager.startTime = 1200.0
+        parent.displayManager.endTime = 1800.0
+        parent.push_zoom_history()
+        self.assertEqual(len(parent.zoom_history), 2)
+
+        # Move to state 3 (current view)
+        parent.displayManager.startTime = 1400.0
+        parent.displayManager.endTime = 1600.0
+
+        # Undo 1: should restore state 2 (1200, 1800)
+        parent.update_called = False
+        res = parent.undo_zoom()
+        self.assertTrue(res)
+        self.assertEqual(parent.displayManager.startTime, UTCDateTime(1200.0))
+        self.assertEqual(parent.displayManager.endTime, UTCDateTime(1800.0))
+        self.assertTrue(parent.update_called)
+
+        # Undo 2: should restore state 1 (1000, 2000)
+        res = parent.undo_zoom()
+        self.assertTrue(res)
+        self.assertEqual(parent.displayManager.startTime, UTCDateTime(1000.0))
+        self.assertEqual(parent.displayManager.endTime, UTCDateTime(2000.0))
+
+        # Undo 3: history empty, should return False
+        self.assertFalse(parent.has_zoom_history())
+        res = parent.undo_zoom()
+        self.assertFalse(res)
+
+    def test_zoom_history_max_depth(self):
+        parent = DummyParent()
+        nav = Navigate()
+        nav.parent = parent
+        parent.plugins = [nav]
+
+        # Push 4 states: (100, 200), (110, 190), (120, 180), (130, 170)
+        states = [
+            (100.0, 200.0),
+            (110.0, 190.0),
+            (120.0, 180.0),
+            (130.0, 170.0)
+        ]
+        for start, end in states:
+            parent.displayManager.startTime = start
+            parent.displayManager.endTime = end
+            parent.push_zoom_history()
+
+        # Default max_history is 3, so only the last 3 states should be retained
+        self.assertEqual(len(parent.zoom_history), 3)
+
+        # First undo restores states[3] (130, 170)
+        parent.undo_zoom()
+        self.assertEqual(parent.displayManager.startTime, UTCDateTime(130.0))
+        # Second undo restores states[2] (120, 180)
+        parent.undo_zoom()
+        self.assertEqual(parent.displayManager.startTime, UTCDateTime(120.0))
+        # Third undo restores states[1] (110, 190)
+        parent.undo_zoom()
+        self.assertEqual(parent.displayManager.startTime, UTCDateTime(110.0))
+        # Fourth undo: empty
+        self.assertFalse(parent.undo_zoom())
+
+    def test_on_char_hook_ctrl_z_undo(self):
+        parent = DummyParent()
+        parent.displayManager.startTime = 1000.0
+        parent.displayManager.endTime = 2000.0
+        parent.push_zoom_history()
+
+        parent.displayManager.startTime = 1200.0
+        parent.displayManager.endTime = 1800.0
+
+        # Ctrl+Z should trigger undo_zoom
+        evt = MockKeyEvent(ord('z'), ctrl=True)
+        TraceDisplayDlg.on_char_hook(parent, evt)
+        self.assertFalse(evt.skipped)
+        self.assertEqual(parent.displayManager.startTime, UTCDateTime(1000.0))
+        self.assertEqual(parent.displayManager.endTime, UTCDateTime(2000.0))
+
+    def test_zoom_right_click_undo(self):
+        parent = DummyParent()
+        parent.displayManager.startTime = 1000.0
+        parent.displayManager.endTime = 2000.0
+        parent.push_zoom_history()
+
+        parent.displayManager.startTime = 1200.0
+        parent.displayManager.endTime = 1800.0
+
+        zoom = Zoom()
+        zoom.parent = parent
+
+        # Mock mouse event button 3 (right-click)
+        class MockMouseEvent(object):
+            def __init__(self, button, xdata):
+                self.button = button
+                self.xdata = xdata
+
+        evt = MockMouseEvent(button=3, xdata=1500.0)
+        zoom.onButtonPress(evt)
+
+        # Should have restored previous zoom state via undo_zoom
+        self.assertEqual(parent.displayManager.startTime, UTCDateTime(1000.0))
+        self.assertEqual(parent.displayManager.endTime, UTCDateTime(2000.0))
+        self.assertFalse(parent.has_zoom_history())
+
+    def test_reset_view_clears_zoom_history(self):
+        parent = DummyParent()
+        parent.displayManager.startTime = 1000.0
+        parent.displayManager.endTime = 2000.0
+        parent.push_zoom_history()
+        self.assertTrue(parent.has_zoom_history())
+
+        parent.clear_zoom_history()
+        self.assertFalse(parent.has_zoom_history())
+        self.assertEqual(len(parent.zoom_history), 0)
+
+    def test_zoom_on_button_release_pushes_history(self):
+        parent = DummyParent()
+        zoom = Zoom()
+        zoom.parent = parent
+        zoom.cleanup = lambda: None
+        parent.displayManager.startTime = 1000.0
+        parent.displayManager.endTime = 2000.0
+
+        zoom.startTime = 1200.0
+        zoom.endTime = 1600.0
+        zoom.onButtonRelease(None)
+
+        # Current view should be updated
+        self.assertEqual(parent.displayManager.startTime, UTCDateTime(1200.0))
+        self.assertEqual(parent.displayManager.endTime, UTCDateTime(1600.0))
+        # History should contain the previous view (1000, 2000)
+        self.assertTrue(parent.has_zoom_history())
+        self.assertEqual(parent.zoom_history[0], (UTCDateTime(1000.0), UTCDateTime(2000.0)))
 
 
 if __name__ == '__main__':

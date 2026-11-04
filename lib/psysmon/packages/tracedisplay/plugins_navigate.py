@@ -61,6 +61,11 @@ class Navigate(InteractivePlugin):
                                                        limit = (1, 99))
         resp_group.add_item(item)
 
+        item = preferences_manager.IntegerSpinPrefItem(name = 'zoom_history_steps',
+                                                       value = 3,
+                                                       limit = (1, 10))
+        resp_group.add_item(item)
+
 
     def getHooks(self):
         hooks = {}
@@ -116,6 +121,9 @@ class Navigate(InteractivePlugin):
         self.parent.shortcut_manager.add_shortcut(origin_rid = self.rid,
                                                   key_combination = ('"z"',),
                                                   action = lambda: None)
+        self.parent.shortcut_manager.add_shortcut(origin_rid = self.rid,
+                                                  key_combination = ('Ctrl+Z',),
+                                                  action = getattr(self.parent, 'undo_zoom', lambda: None))
 
 
     def deactivate(self):
