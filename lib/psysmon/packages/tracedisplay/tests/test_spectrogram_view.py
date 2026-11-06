@@ -39,15 +39,19 @@ class SpectrogramViewTestCase(unittest.TestCase):
 
         fmin_item = self.plotter.pref_manager.get_item('fmin')[0]
         fmax_item = self.plotter.pref_manager.get_item('fmax')[0]
+        process_item = self.plotter.pref_manager.get_item('process')[0]
 
         self.assertEqual(fmin_item.label, 'fmin [Hz]')
         self.assertEqual(fmax_item.label, 'fmax [Hz]')
+        self.assertEqual(process_item.label, 'process')
         self.assertEqual(fmin_item.value, 0.0)
         self.assertEqual(fmax_item.value, 0.0)
         self.assertEqual(fmin_item.limit, (0.0, None))
         self.assertEqual(fmax_item.limit, (0.0, None))
         self.assertIn('on_value_change', fmin_item.hooks)
         self.assertIn('on_value_change', fmax_item.hooks)
+        self.assertEqual(fmin_item.hooks['on_value_change'], self.plotter.on_pref_input_changed)
+        self.assertEqual(fmax_item.hooks['on_value_change'], self.plotter.on_pref_input_changed)
 
     def test_get_nyquist_frequency(self):
         ''' Verify Nyquist calculation from stream or parent dataManager.
@@ -81,19 +85,19 @@ class SpectrogramViewTestCase(unittest.TestCase):
         '''
         # First set a custom fmax
         self.plotter.pref_manager.set_value('fmax', 20.0)
-        self.plotter.on_pref_changed()
+        self.plotter.on_pref_input_changed()
         self.assertEqual(self.plotter.pref_manager.get_value('fmax'), 20.0)
         self.assertTrue(self.plotter._user_fmax_set)
 
         # Reset fmax to 0.0
         self.plotter.pref_manager.set_value('fmax', 0.0)
-        self.plotter.on_pref_changed()
+        self.plotter.on_pref_input_changed()
         self.assertEqual(self.plotter.pref_manager.get_value('fmax'), 50.0)
         self.assertFalse(self.plotter._user_fmax_set)
 
         # Setting None should also reset to Nyquist
         self.plotter.pref_manager.set_value('fmax', None)
-        self.plotter.on_pref_changed()
+        self.plotter.on_pref_input_changed()
         self.assertEqual(self.plotter.pref_manager.get_value('fmax'), 50.0)
         self.assertFalse(self.plotter._user_fmax_set)
 
@@ -101,7 +105,7 @@ class SpectrogramViewTestCase(unittest.TestCase):
         ''' Verify setting fmax > Nyquist clamps fmax to Nyquist.
         '''
         self.plotter.pref_manager.set_value('fmax', 80.0)
-        self.plotter.on_pref_changed()
+        self.plotter.on_pref_input_changed()
         self.assertEqual(self.plotter.pref_manager.get_value('fmax'), 50.0)
         self.assertFalse(self.plotter._user_fmax_set)
 
@@ -109,16 +113,38 @@ class SpectrogramViewTestCase(unittest.TestCase):
         ''' Verify setting negative fmin clamps fmin to 0.0.
         '''
         self.plotter.pref_manager.set_value('fmin', -10.0)
-        self.plotter.on_pref_changed()
+        self.plotter.on_pref_input_changed()
         self.assertEqual(self.plotter.pref_manager.get_value('fmin'), 0.0)
 
-    def test_on_pref_changed_triggers_update_display(self):
-        ''' Verify on_pref_changed calls parent.update_display().
+    def test_on_pref_input_changed_does_not_trigger_redraw(self):
+        ''' Verify on_pref_input_changed performs validation without calling update_display or plot.
         '''
         self.parent.update_display.reset_mock()
+        self.plotter.plot = MagicMock()
         self.plotter.pref_manager.set_value('fmin', 5.0)
-        self.plotter.on_pref_changed()
+        self.plotter.on_pref_input_changed()
+        self.parent.update_display.assert_not_called()
+        self.plotter.plot.assert_not_called()
+
+    def test_on_process_fast_path(self):
+        ''' Verify on_process re-plots directly via self.plot(dm, data_mgr) when procStream exists.
+        '''
+        self.parent.update_display.reset_mock()
+        self.plotter.plot = MagicMock()
+        self.plotter.pref_manager.set_value('fmin', 5.0)
+        self.plotter.on_process()
+        self.plotter.plot.assert_called_once_with(self.display_manager, self.data_manager)
+        self.parent.update_display.assert_not_called()
+
+    def test_on_process_fallback_when_no_procstream(self):
+        ''' Verify on_process falls back to parent.update_display() when procStream is not loaded.
+        '''
+        self.data_manager.procStream = None
+        self.parent.update_display.reset_mock()
+        self.plotter.plot = MagicMock()
+        self.plotter.on_process()
         self.parent.update_display.assert_called_once()
+        self.plotter.plot.assert_not_called()
 
     def _create_test_view(self):
         ''' Helper to construct a headless SpectrogramView with a matplotlib figure and axes.

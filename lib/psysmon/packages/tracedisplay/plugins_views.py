@@ -1013,7 +1013,7 @@ class SpectrogramPlotter(ViewPlugin):
                                                      limit = (0.0, None),
                                                      digits = 1,
                                                      increment = 1.0,
-                                                     hooks = {'on_value_change': self.on_pref_changed},
+                                                     hooks = {'on_value_change': self.on_pref_input_changed},
                                                      tool_tip = 'Lower frequency limit for display in Hz (0.0 for lowest frequency bin).')
         freq_group.add_item(item)
 
@@ -1024,8 +1024,16 @@ class SpectrogramPlotter(ViewPlugin):
                                                      limit = (0.0, None),
                                                      digits = 1,
                                                      increment = 1.0,
-                                                     hooks = {'on_value_change': self.on_pref_changed},
+                                                     hooks = {'on_value_change': self.on_pref_input_changed},
                                                      tool_tip = 'Upper frequency limit for display in Hz (0.0 or empty resets to trace Nyquist frequency).')
+        freq_group.add_item(item)
+
+        # The process action button.
+        item = preferences_manager.ActionItem(name = 'process',
+                                              label = 'process',
+                                              mode = 'button',
+                                              action = self.on_process,
+                                              tool_tip = 'Calculate and update the spectrogram display with current preferences.')
         freq_group.add_item(item)
 
         # The colormap.
@@ -1078,8 +1086,8 @@ class SpectrogramPlotter(ViewPlugin):
         return ViewPlugin.buildFoldPanel(self, panelBar)
 
 
-    def on_pref_changed(self):
-        ''' Callback when spectrogram preferences are updated.
+    def on_pref_input_changed(self):
+        ''' Soft validation when user changes values in preference GUI (no redraw).
         '''
         if getattr(self, '_updating_pref', False):
             return
@@ -1110,8 +1118,25 @@ class SpectrogramPlotter(ViewPlugin):
         finally:
             self._updating_pref = False
 
+
+    def on_process(self, event = None):
+        ''' Process and update the spectrogram display with current preferences.
+        '''
+        self.on_pref_input_changed()
         if hasattr(self, 'parent') and self.parent is not None:
-            self.parent.update_display()
+            dm = getattr(self.parent, 'displayManager', None)
+            data_mgr = getattr(self.parent, 'dataManager', None)
+            if dm is not None and data_mgr is not None and getattr(data_mgr, 'procStream', None):
+                # Fast-path: directly re-plot only spectrogram views from existing procStream
+                self.plot(dm, data_mgr)
+            else:
+                self.parent.update_display()
+
+
+    def on_pref_changed(self):
+        ''' Alias for on_process for backwards compatibility.
+        '''
+        self.on_process()
 
 
     def plot(self, displayManager, dataManager):
