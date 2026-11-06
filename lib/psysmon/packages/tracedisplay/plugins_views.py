@@ -1278,32 +1278,35 @@ class SpectrogramView(psy_view.viewnode.ViewNode):
         pad_factor = int(pad_factor) if pad_factor is not None else 1
         pad_to = int(nfft * pad_factor) if pad_factor > 1 else None
 
-        specgram, freq, time = mpl.mlab.specgram(data,
-                                                 Fs = samp_rate,
-                                                 NFFT = nfft,
-                                                 noverlap = int(nfft *  overlap),
-                                                 pad_to = pad_to)
+        # Pad input if shorter than window length
+        if len(data) < nfft:
+            data = np.pad(data, (0, nfft - len(data)), mode='constant')
 
-        # Save the frequency and time array in the instance.
+        freq, time, specgram = scipy.signal.spectrogram(
+            data,
+            fs = samp_rate,
+            window = np.hanning(nfft),
+            nperseg = nfft,
+            noverlap = int(nfft * overlap),
+            nfft = pad_to,
+            detrend = False,
+            mode = 'psd',
+            scaling = 'density'
+        )
+
+        # Save the full frequency and time array in the instance.
         self.freq = freq
         self.time = start_time + time
 
         # calculate half bin width
-        halfbin_time = (time[1] - time[0]) / 2.0
-        halfbin_freq = (freq[1] - freq[0]) / 2.0
+        halfbin_time = (time[1] - time[0]) / 2.0 if len(time) > 1 else (wlen / 2.0)
+        halfbin_freq = (freq[1] - freq[0]) / 2.0 if len(freq) > 1 else (samp_rate / 2.0)
 
-        # Apply the amplitude mode and remove the frequency 0 bin.
-        if amp_mode == 'normal':
-            specgram = np.sqrt(specgram[1:, :])
-        elif amp_mode == 'dB':
-            specgram = 10 * np.log10(specgram[1:, :])
-        elif amp_mode == 'square':
-            specgram = specgram[1:, :]
-        else:
-            raise ValueError("Value %s for amp_mode not allowed." % amp_mode)
+        # Remove the frequency 0 (DC) bin.
+        specgram = specgram[1:, :]
         self.freq = self.freq[1:]
 
-        # Frequency range filtering (slicing without recomputation).
+        # Frequency range filtering (slicing before amplitude mode conversion).
         nyquist = samp_rate / 2.0
         low_frequ = float(fmin) if (fmin is not None and fmin > 0.0) else None
         high_frequ = float(fmax) if (fmax is not None and fmax > 0.0) else None
@@ -1334,13 +1337,33 @@ class SpectrogramView(psy_view.viewnode.ViewNode):
             low_frequ = None
             high_frequ = None
 
-        # Compute the image extent.
+        # Apply the amplitude mode on the sliced frequency band.
+        if amp_mode == 'normal':
+            specgram = np.sqrt(specgram)
+        elif amp_mode == 'dB':
+            specgram = 10 * np.log10(np.maximum(specgram, 1e-20))
+        elif amp_mode == 'square':
+            pass
+        else:
+            raise ValueError("Value %s for amp_mode not allowed." % amp_mode)
+
+        # Compute the image extent over the full time span.
         extent = (self.time[0] - halfbin_time, self.time[-1] + halfbin_time,
                   self.freq[0] - halfbin_freq, self.freq[-1] + halfbin_freq)
 
+        # Decimate along time axis for screen display if number of columns exceeds limit
+        max_display_cols = 3000
+        n_cols = specgram.shape[1]
+        if n_cols > max_display_cols:
+            step = int(np.ceil(n_cols / max_display_cols))
+            indices = np.arange(0, n_cols, step)
+            specgram_disp = np.maximum.reduceat(specgram, indices, axis=1)
+        else:
+            specgram_disp = specgram
+
         # Show the spectrogram as an image.
         #cmap = obspy.imaging.cm.obspy_sequential
-        self.axes.imshow(specgram,
+        self.axes.imshow(specgram_disp,
                          interpolation = 'nearest',
                          origin = 'lower',
                          extent = extent,

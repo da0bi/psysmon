@@ -331,7 +331,51 @@ class SpectrogramViewTestCase(unittest.TestCase):
         _, kwargs = mock_view.plot.call_args
         self.assertEqual(kwargs.get('pad_factor'), 1)
 
+    def test_spectrogram_short_input_padding(self):
+        ''' Verify that signals shorter than window length (len(data) < nfft) are zero-padded without error.
+        '''
+        view = self._create_test_view()
+        short_data = np.ones(50, dtype=np.float32)  # shorter than nfft=128
+
+        view.spectrogram(short_data, samp_rate=100.0, wlen=1.0)
+        self.assertGreaterEqual(len(view.freq), 1)
+        self.assertEqual(len(view.time), 1)
+        self.assertEqual(len(view.axes.images), 1)
+
+    def test_spectrogram_display_decimation_preserves_resolution_and_peaks(self):
+        ''' Verify that large spectrograms (> 3000 cols) are decimated for display while self.time remains full resolution.
+        '''
+        view = self._create_test_view()
+        # 100 Hz, 4000 steps requires 4000 * 64 = 256,000 samples
+        npts = 260000
+        data = np.zeros(npts, dtype=np.float32)
+        # Inject an amplitude spike at sample 100,000
+        data[100000] = 50.0
+
+        view.spectrogram(data, samp_rate=100.0, wlen=1.0, overlap=0.5, amp_mode='square')
+
+        # Full resolution self.time has > 3500 points
+        self.assertGreater(len(view.time), 3500)
+
+        # Displayed image array has <= 3000 columns
+        img_arr = view.axes.images[0].get_array()
+        self.assertLessEqual(img_arr.shape[1], 3000)
+
+        # Peak preservation: maximum of displayed image captures the spike
+        self.assertGreater(img_arr.max(), 0.1)
+
+        # Measurement tool continues snapping with full-resolution time array
+        event = MagicMock()
+        event.inaxes = view.axes
+        event.xdata = view.time[1000]
+        event.ydata = view.freq[10]
+        measurement = view.measure(event)
+        self.assertIsNotNone(measurement)
+        self.assertAlmostEqual(measurement['xy'][0], view.time[1000], places=4)
+        self.assertAlmostEqual(measurement['xy'][1], view.freq[10], places=4)
+
 
 if __name__ == '__main__':
     unittest.main()
+
 
