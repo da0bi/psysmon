@@ -1028,6 +1028,14 @@ class SpectrogramPlotter(ViewPlugin):
                                                      tool_tip = 'Upper frequency limit for display in Hz (0.0 or empty resets to trace Nyquist frequency).')
         freq_group.add_item(item)
 
+        # The y-axis frequency resolution refinement.
+        item = preferences_manager.SingleChoicePrefItem(name = 'y_refinement',
+                                                        label = 'y-axis refinement',
+                                                        limit = ('1x (standard)', '2x', '4x', '8x'),
+                                                        value = '1x (standard)',
+                                                        tool_tip = 'Refine the vertical frequency resolution via FFT oversampling (zero-padding).')
+        freq_group.add_item(item)
+
         # The process action button.
         item = preferences_manager.ActionItem(name = 'process',
                                               label = 'process',
@@ -1162,6 +1170,11 @@ class SpectrogramPlotter(ViewPlugin):
         '''
         stream = dataManager.procStream
 
+        # Resolve refinement multiplier
+        refinement = self.pref_manager.get_value('y_refinement')
+        multiplier_map = {'1x (standard)': 1, '2x': 2, '4x': 4, '8x': 8}
+        pad_factor = multiplier_map.get(refinement, 1) if isinstance(refinement, str) else (int(refinement) if refinement else 1)
+
         for curChannel in channels:
             views = displayManager.getViewContainer(station = curChannel.parent.name,
                                                       channel = curChannel.name,
@@ -1182,7 +1195,8 @@ class SpectrogramPlotter(ViewPlugin):
                                  amp_mode = self.pref_manager.get_value('amplitude_mode'),
                                  cmap = self.pref_manager.get_value('cmap'),
                                  fmin = self.pref_manager.get_value('fmin'),
-                                 fmax = self.pref_manager.get_value('fmax'))
+                                 fmax = self.pref_manager.get_value('fmax'),
+                                 pad_factor = pad_factor)
 
                 curView.setXLimits(left = displayManager.startTime.timestamp,
                                    right = displayManager.endTime.timestamp)
@@ -1218,7 +1232,7 @@ class SpectrogramView(psy_view.viewnode.ViewNode):
 
 
     def plot(self, stream, win_length = 1.0, overlap = 0.5, amp_mode = 'normal', cmap = 'viridis',
-             fmin = 0.0, fmax = 0.0):
+             fmin = 0.0, fmax = 0.0, pad_factor = 1):
         for trace in stream:
             timeArray = np.arange(0, trace.stats.npts)
             timeArray = timeArray / trace.stats.sampling_rate
@@ -1245,7 +1259,8 @@ class SpectrogramView(psy_view.viewnode.ViewNode):
                              amp_mode = amp_mode,
                              cmap = cmap,
                              fmin = fmin,
-                             fmax = fmax)
+                             fmax = fmax,
+                             pad_factor = pad_factor)
 
         self.axes.set_frame_on(False)
         self.axes.get_xaxis().set_visible(False)
@@ -1254,17 +1269,20 @@ class SpectrogramView(psy_view.viewnode.ViewNode):
 
     def spectrogram(self, data, samp_rate, wlen, overlap = 0.9, amp_mode = 'normal',
                     clip=[0.0, 1.0], start_time = 0, cmap = 'viridis',
-                    fmin = 0.0, fmax = 0.0):
+                    fmin = 0.0, fmax = 0.0, pad_factor = 1):
         samp_rate = float(samp_rate)
         wlen = float(wlen)
         overlap = float(overlap)
 
         nfft = int(psysmon.core.signal.nearest_pow_2(wlen * samp_rate))
+        pad_factor = int(pad_factor) if pad_factor is not None else 1
+        pad_to = int(nfft * pad_factor) if pad_factor > 1 else None
 
         specgram, freq, time = mpl.mlab.specgram(data,
                                                  Fs = samp_rate,
                                                  NFFT = nfft,
-                                                 noverlap = int(nfft *  overlap))
+                                                 noverlap = int(nfft *  overlap),
+                                                 pad_to = pad_to)
 
         # Save the frequency and time array in the instance.
         self.freq = freq

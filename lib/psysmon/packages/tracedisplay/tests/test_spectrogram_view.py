@@ -53,6 +53,12 @@ class SpectrogramViewTestCase(unittest.TestCase):
         self.assertEqual(fmin_item.hooks['on_value_change'], self.plotter.on_pref_input_changed)
         self.assertEqual(fmax_item.hooks['on_value_change'], self.plotter.on_pref_input_changed)
 
+        self.assertIsNotNone(self.plotter.pref_manager.get_item('y_refinement'))
+        refine_item = self.plotter.pref_manager.get_item('y_refinement')[0]
+        self.assertEqual(refine_item.label, 'y-axis refinement')
+        self.assertEqual(refine_item.value, '1x (standard)')
+        self.assertEqual(refine_item.limit, ('1x (standard)', '2x', '4x', '8x'))
+
     def test_get_nyquist_frequency(self):
         ''' Verify Nyquist calculation from stream or parent dataManager.
         '''
@@ -254,6 +260,78 @@ class SpectrogramViewTestCase(unittest.TestCase):
         self.assertLessEqual(snap_f, 25.0 + 0.5)
         self.assertAlmostEqual(snap_f, 18.0, delta=1.0)
 
+    def test_spectrogram_y_refinement_pad_factor(self):
+        ''' Verify that pad_factor refines the vertical frequency resolution (4x bins).
+        '''
+        data = np.sin(np.linspace(0, 100, 1000, dtype=np.float32))
+
+        # Standard 1x view
+        view1 = self._create_test_view()
+        view1.spectrogram(data, samp_rate=100.0, wlen=1.0, fmin=5.0, fmax=20.0, pad_factor=1)
+
+        # Refined 4x view
+        view4 = self._create_test_view()
+        view4.spectrogram(data, samp_rate=100.0, wlen=1.0, fmin=5.0, fmax=20.0, pad_factor=4)
+
+        # With wlen=1.0 s and fs=100 Hz, NFFT=128:
+        # 1x df is 100 / 128 = 0.78125 Hz
+        # 4x df is 100 / 512 = 0.1953125 Hz
+        df1 = view1.freq[1] - view1.freq[0]
+        df4 = view4.freq[1] - view4.freq[0]
+        self.assertAlmostEqual(df1, 0.78125, places=5)
+        self.assertAlmostEqual(df4, 0.1953125, places=5)
+        self.assertAlmostEqual(df4, df1 / 4.0, places=5)
+
+        # Frequency bin count across [5.0, 20.0] Hz is ~4x larger in view4
+        self.assertGreaterEqual(len(view4.freq), len(view1.freq) * 3)
+
+        # Axes y-limits remain zoomed to [5.0, 20.0]
+        ylim4 = view4.axes.get_ylim()
+        self.assertAlmostEqual(ylim4[0], 5.0, places=4)
+        self.assertAlmostEqual(ylim4[1], 20.0, places=4)
+
+        # Measurement snaps accurately on refined grid
+        event = MagicMock()
+        event.inaxes = view4.axes
+        event.xdata = view4.time[len(view4.time) // 2]
+        event.ydata = 12.345
+        m4 = view4.measure(event)
+        self.assertIsNotNone(m4)
+        self.assertAlmostEqual(m4['xy'][1], 12.345, delta=df4)
+
+    def test_plotChannel_passes_pad_factor(self):
+        ''' Verify plotChannel correctly translates y_refinement choice into pad_factor.
+        '''
+        mock_channel = MagicMock()
+        mock_channel.name = 'HHZ'
+        mock_channel.parent.name = 'STA'
+        mock_channel.parent.network = 'XX'
+        mock_channel.parent.location = ''
+        mock_channel.parent.obspy_location = ''
+
+        mock_view = MagicMock()
+        self.display_manager.getViewContainer.return_value = [mock_view]
+        self.display_manager.startTime.timestamp = 0.0
+        self.display_manager.endTime.timestamp = 10.0
+
+        # Test '4x'
+        self.plotter.pref_manager.set_value('y_refinement', '4x')
+        self.plotter.plotChannel(self.display_manager, self.data_manager, [mock_channel])
+
+        mock_view.plot.assert_called_once()
+        _, kwargs = mock_view.plot.call_args
+        self.assertEqual(kwargs.get('pad_factor'), 4)
+
+        # Test default '1x (standard)'
+        mock_view.plot.reset_mock()
+        self.plotter.pref_manager.set_value('y_refinement', '1x (standard)')
+        self.plotter.plotChannel(self.display_manager, self.data_manager, [mock_channel])
+
+        mock_view.plot.assert_called_once()
+        _, kwargs = mock_view.plot.call_args
+        self.assertEqual(kwargs.get('pad_factor'), 1)
+
 
 if __name__ == '__main__':
     unittest.main()
+
