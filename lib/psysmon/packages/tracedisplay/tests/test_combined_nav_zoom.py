@@ -119,10 +119,20 @@ class DummyParent(object):
     def clear_zoom_history(self):
         return TraceDisplayDlg.clear_zoom_history(self)
 
+    def on_key_up(self, event):
+        return TraceDisplayDlg.on_key_up(self, event)
+
+    def on_char_hook(self, event):
+        return TraceDisplayDlg.on_char_hook(self, event)
+
+    def on_activate(self, event):
+        return TraceDisplayDlg.on_activate(self, event)
+
 
 class MockKeyEvent(object):
-    def __init__(self, key_code, shift=False, ctrl=False, alt=False, cmd=False):
+    def __init__(self, key_code, event_type=wx.wxEVT_KEY_UP, shift=False, ctrl=False, alt=False, cmd=False):
         self.key_code = key_code
+        self.event_type = event_type
         self.shift = shift
         self.ctrl = ctrl
         self.alt = alt
@@ -131,6 +141,9 @@ class MockKeyEvent(object):
 
     def GetKeyCode(self):
         return self.key_code
+
+    def GetEventType(self):
+        return self.event_type
 
     def ShiftDown(self):
         return self.shift
@@ -601,6 +614,178 @@ class CombinedNavZoomTestCase(unittest.TestCase):
         # History should contain the previous view (1000, 2000)
         self.assertTrue(parent.has_zoom_history())
         self.assertEqual(parent.zoom_history[0], (UTCDateTime(1000.0), UTCDateTime(2000.0)))
+
+    def test_key_up_global_event_filter(self):
+        from psysmon.packages.tracedisplay.tracedisplay import TraceDisplayKeyFilter
+        parent = DummyParent()
+        nav = Navigate()
+        nav.parent = parent
+        zoom = Zoom()
+        zoom.parent = parent
+        parent.plugins = [nav, zoom]
+        nav.active = True
+
+        TraceDisplayDlg.swap_tool(parent, 'zoom')
+        self.assertTrue(zoom.active)
+        self.assertEqual(parent.plugin_to_restore, nav)
+
+        # Create the filter attached to parent
+        key_filter = TraceDisplayKeyFilter(parent)
+
+        # Non-matching event (key code ord('A'))
+        evt_a = MockKeyEvent(ord('A'), event_type=wx.wxEVT_KEY_UP)
+        result = key_filter.FilterEvent(evt_a)
+        self.assertEqual(result, wx.EventFilter.Event_Skip)
+        self.assertTrue(zoom.active)
+
+        # Matching event (key code ord('z'))
+        evt_z = MockKeyEvent(ord('z'), event_type=wx.wxEVT_KEY_UP)
+        result = key_filter.FilterEvent(evt_z)
+        self.assertEqual(result, wx.EventFilter.Event_Skip)
+        # Verify tool was restored to navigate
+        self.assertFalse(zoom.active)
+        self.assertTrue(nav.active)
+        self.assertIsNone(parent.plugin_to_restore)
+
+    def test_stuck_drag_escape_recovery(self):
+        parent = DummyParent()
+        nav = Navigate()
+        nav.parent = parent
+        zoom = Zoom()
+        zoom.parent = parent
+        parent.plugins = [nav, zoom]
+        nav.active = True
+
+        TraceDisplayDlg.swap_tool(parent, 'zoom')
+        self.assertTrue(zoom.active)
+        zoom.in_drag = True
+
+        # User presses Escape while in stuck drag
+        evt_esc = MockKeyEvent(wx.WXK_ESCAPE)
+        TraceDisplayDlg.on_char_hook(parent, evt_esc)
+
+        self.assertFalse(zoom.in_drag)
+        self.assertFalse(zoom.active)
+        self.assertTrue(nav.active)
+        self.assertIsNone(parent.plugin_to_restore)
+
+    def test_on_button_release_exception_safety(self):
+        parent = DummyParent()
+        nav = Navigate()
+        nav.parent = parent
+        zoom = Zoom()
+        zoom.parent = parent
+        parent.plugins = [nav, zoom]
+        nav.active = True
+
+        TraceDisplayDlg.swap_tool(parent, 'zoom')
+        zoom.in_drag = True
+        zoom.startTime = 1000.0
+        zoom.endTime = 1500.0
+
+        # Simulate 'z' released during drag
+        TraceDisplayDlg.on_key_up(parent, MockKeyEvent(ord('z')))
+        self.assertTrue(zoom.restore_on_release)
+
+        # Make displayManager.setTimeLimits throw an exception
+        def failing_set_time_limits(start, end):
+            raise RuntimeError("Unexpected plotting error")
+
+        parent.displayManager.setTimeLimits = failing_set_time_limits
+
+        class MockButton1Event(object):
+            def __init__(self):
+                self.button = 1
+
+        with self.assertRaises(RuntimeError):
+            zoom.onButtonRelease(MockButton1Event())
+
+        # Cleanup and restoration must have completed despite exception
+        self.assertFalse(zoom.in_drag)
+        self.assertFalse(zoom.restore_on_release)
+        self.assertFalse(zoom.active)
+        self.assertTrue(nav.active)
+        self.assertIsNone(parent.plugin_to_restore)
+
+    def test_window_deactivation_restores_tool(self):
+        parent = DummyParent()
+        nav = Navigate()
+        nav.parent = parent
+        zoom = Zoom()
+        zoom.parent = parent
+        parent.plugins = [nav, zoom]
+        nav.active = True
+
+        TraceDisplayDlg.swap_tool(parent, 'zoom')
+        self.assertTrue(zoom.active)
+        zoom.in_drag = True
+
+        class MockActivateEvent(object):
+            def __init__(self, active=False):
+                self.active = active
+                self.skipped = False
+
+            def GetActive(self):
+                return self.active
+
+            def Skip(self):
+                self.skipped = True
+
+        evt_deactivate = MockActivateEvent(active=False)
+        TraceDisplayDlg.on_activate(parent, evt_deactivate)
+
+        self.assertTrue(evt_deactivate.skipped)
+        self.assertFalse(zoom.in_drag)
+        self.assertFalse(zoom.active)
+        self.assertTrue(nav.active)
+        self.assertIsNone(parent.plugin_to_restore)
+
+    def test_mouse_motion_lost_release_recovery(self):
+        parent = DummyParent()
+        nav = Navigate()
+        nav.parent = parent
+        zoom = Zoom()
+        zoom.parent = parent
+        parent.plugins = [nav, zoom]
+        nav.active = True
+
+        TraceDisplayDlg.swap_tool(parent, 'zoom')
+        zoom.in_drag = True
+        zoom.restore_on_release = True
+
+        class MockMotionEvent(object):
+            def __init__(self):
+                self.x = 100
+                self.y = 100
+                self.inaxes = None
+                self.xdata = None
+
+        # In testing environment LeftIsDown is False, so onMouseMotion should detect lost release
+        from unittest.mock import patch, MagicMock
+        mock_mouse_state = MagicMock()
+        mock_mouse_state.LeftIsDown.return_value = False
+        with patch('wx.GetApp', return_value=object()), \
+             patch('wx.GetMouseState', return_value=mock_mouse_state):
+            zoom.onMouseMotion(MockMotionEvent())
+
+        self.assertFalse(zoom.in_drag)
+        self.assertFalse(zoom.restore_on_release)
+        self.assertFalse(zoom.active)
+        self.assertTrue(nav.active)
+        self.assertIsNone(parent.plugin_to_restore)
+
+    def test_on_button_press_ignores_none_xdata(self):
+        parent = DummyParent()
+        zoom = Zoom()
+        zoom.parent = parent
+
+        class MockButtonPressEvent(object):
+            def __init__(self):
+                self.button = 1
+                self.xdata = None
+
+        zoom.onButtonPress(MockButtonPressEvent())
+        self.assertFalse(zoom.in_drag)
 
 
 if __name__ == '__main__':

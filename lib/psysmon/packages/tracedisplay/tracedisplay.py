@@ -344,6 +344,26 @@ class TraceDisplayEditDlg(wx.Frame):
 
 
 
+class TraceDisplayKeyFilter(wx.EventFilter):
+    ''' Global event filter to reliably intercept key-up events across all child controls.
+    Ensures hold-to-zoom release of 'z' is never swallowed by child widgets or canvases.
+    '''
+    def __init__(self, dlg):
+        super(TraceDisplayKeyFilter, self).__init__()
+        self.dlg = dlg
+
+    def FilterEvent(self, event):
+        if event.GetEventType() == wx.wxEVT_KEY_UP:
+            keyCode = event.GetKeyCode()
+            if keyCode in [ord('Z'), ord('z')]:
+                if hasattr(self.dlg, 'plugin_to_restore') and self.dlg.plugin_to_restore is not None:
+                    try:
+                        self.dlg.on_key_up(event)
+                    except Exception:
+                        pass
+        return wx.EventFilter.Event_Skip
+
+
 class TraceDisplayDlg(psysmon.gui.docking_frame.DockingFrame):
     ''' The TraceDisplay main window.
 
@@ -418,6 +438,10 @@ class TraceDisplayDlg(psysmon.gui.docking_frame.DockingFrame):
 
         # A temporary plugin register to swap two plugins.
         self.plugin_to_restore = None
+
+        # Register global event filter for reliable hold-to-zoom key-up interception
+        self._key_filter = TraceDisplayKeyFilter(self)
+        wx.EvtHandler.AddFilter(self._key_filter)
 
         # Zoom history stack for multi-level zoom undo/reset.
         self.zoom_history = []
@@ -533,6 +557,32 @@ class TraceDisplayDlg(psysmon.gui.docking_frame.DockingFrame):
 
         self.Bind(wx.EVT_CHAR_HOOK, self.on_char_hook)
         self.Bind(wx.EVT_KEY_UP, self.on_key_up)
+        self.Bind(wx.EVT_ACTIVATE, self.on_activate)
+
+
+    def on_activate(self, event):
+        ''' Handle window activation/deactivation.
+        Restore the previous tool if the window loses focus while hold-to-zoom is active.
+        '''
+        if not event.GetActive():
+            if self.plugin_to_restore is not None:
+                zoom_plugin = self.get_plugin('zoom')
+                if zoom_plugin and getattr(zoom_plugin, 'in_drag', False):
+                    zoom_plugin.cleanup()
+                self.restore_tool()
+        event.Skip()
+
+
+    def Destroy(self):
+        ''' Clean up resources before destroying the window.
+        '''
+        if hasattr(self, '_key_filter') and self._key_filter is not None:
+            try:
+                wx.EvtHandler.RemoveFilter(self._key_filter)
+            except Exception:
+                pass
+            self._key_filter = None
+        return super(TraceDisplayDlg, self).Destroy()
 
 
     def on_deactivate_tool(self, event):
@@ -652,6 +702,15 @@ class TraceDisplayDlg(psysmon.gui.docking_frame.DockingFrame):
         cmd_down = event.CmdDown() if hasattr(event, 'CmdDown') else False
         ctrl_down = event.ControlDown() or cmd_down
 
+        # Escape key: cancel active drag and restore swapped tool
+        if keyCode == wx.WXK_ESCAPE:
+            zoom_plugin = self.get_plugin('zoom')
+            if zoom_plugin and getattr(zoom_plugin, 'in_drag', False):
+                zoom_plugin.cleanup()
+            if self.plugin_to_restore is not None:
+                self.restore_tool()
+                return
+
         # Ctrl+Z / Cmd+Z: Undo / reset last zoom step from anywhere
         if keyCode in [ord('Z'), ord('z')] and ctrl_down and not event.ShiftDown():
             if self.undo_zoom():
@@ -727,16 +786,7 @@ class TraceDisplayDlg(psysmon.gui.docking_frame.DockingFrame):
         ''' Swap the tool with one defined in the preferences.
         '''
         if self.plugin_to_restore is not None:
-            # Check if 'Z' is still physically pressed. If not, recover from stale state.
-            z_down = False
-            try:
-                z_down = wx.GetKeyState(ord('Z')) or wx.GetKeyState(ord('z'))
-            except Exception:
-                pass
-            if not z_down:
-                self.restore_tool()
-            else:
-                return
+            return
 
         active_plugin = self.get_active_interactive_plugin()
 
