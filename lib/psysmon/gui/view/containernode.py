@@ -94,6 +94,7 @@ class ContainerNode(wx.Panel):
 
         self.Bind(wx.EVT_SET_FOCUS, self.on_set_focus)
         self.Bind(wx.EVT_KEY_DOWN, self.on_key_down)
+        self.Bind(wx.EVT_KEY_UP, self.on_key_up)
 
 
     def on_set_focus(self, event):
@@ -104,6 +105,12 @@ class ContainerNode(wx.Panel):
 
     def on_key_down(self, event):
         self.logger.debug("on_key_down in container node %s. event: %s", self.name, event)
+        event.ResumePropagation(30)
+        event.Skip()
+
+
+    def on_key_up(self, event):
+        self.logger.debug("on_key_up in container node %s. event: %s", self.name, event)
         event.ResumePropagation(30)
         event.Skip()
         

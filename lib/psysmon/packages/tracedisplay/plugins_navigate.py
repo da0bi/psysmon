@@ -26,6 +26,7 @@ import wx
 import psysmon
 from psysmon.core.plugins import InteractivePlugin
 from psysmon.artwork.icons import iconsBlack16 as icons
+import psysmon.core.preferences_manager as preferences_manager
 
 
 class Navigate(InteractivePlugin):
@@ -51,101 +52,78 @@ class Navigate(InteractivePlugin):
         # Set the shortcut string.
         self.accelerator_string = 'N'
 
-        # Accelerators for shortcuts not bound to a menu item.
-        handler = ft.partial(self.on_time_advance, step = 100)
-        self.shortcuts['advance_100'] = {'accelerator_string': 'Right',
-                                         'handler': handler}
+        # Add the plugin preferences.
+        pref_page = self.pref_manager.add_page('Preferences')
+        resp_group = pref_page.add_group('response')
 
-        handler = ft.partial(self.on_time_advance, step = 25)
-        self.shortcuts['advance_25'] = {'accelerator_string': 'SHIFT+Right',
-                                        'handler': handler}
+        item = preferences_manager.IntegerSpinPrefItem(name = 'zoom ratio',
+                                                       value = 20,
+                                                       limit = (1, 99))
+        resp_group.add_item(item)
 
-        handler = ft.partial(self.on_time_advance, step = 10)
-        self.shortcuts['advance_10'] = {'accelerator_string': 'CTRL+Right',
-                                        'handler': handler}
-
-        handler = ft.partial(self.on_time_advance, step = 1)
-        self.shortcuts['advance_1'] = {'accelerator_string': 'ALT+Right',
-                                       'handler': handler}
-
-        handler = ft.partial(self.on_time_regress, step = 100)
-        self.shortcuts['regress_100'] = {'accelerator_string': 'Left',
-                                         'handler': handler}
-
-        handler = ft.partial(self.on_time_regress, step = 25)
-        self.shortcuts['regress_25'] = {'accelerator_string': 'SHIFT+Left',
-                                        'handler': handler}
-
-        handler = ft.partial(self.on_time_regress, step = 10)
-        self.shortcuts['regress_10'] = {'accelerator_string': 'CTRL+Left',
-                                        'handler': handler}
-
-        handler = ft.partial(self.on_time_regress, step = 1)
-        self.shortcuts['regress_1'] = {'accelerator_string': 'ALT+Left',
-                                       'handler': handler}
+        item = preferences_manager.IntegerSpinPrefItem(name = 'zoom_history_steps',
+                                                       value = 3,
+                                                       limit = (1, 10))
+        resp_group.add_item(item)
 
 
     def getHooks(self):
         hooks = {}
-
-        #hooks['button_press_event'] = self.onButtonPress
-        #hooks['button_release_event'] = self.onButtonRelease
-
         return hooks
 
 
-    def on_time_advance(self, evt, step):
-        '''
+    def on_time_advance(self, evt = None, step = 100):
+        ''' Advance displayed time.
         '''
         self.parent.advanceTimePercentage(step = step)
 
 
-    def on_time_regress(self, evt, step):
-        '''
+    def on_time_regress(self, evt = None, step = 100):
+        ''' Regress displayed time.
         '''
         self.parent.decreaseTimePercentage(step = step)
+
+
+    def on_zoom_in(self, evt = None, ratio = None):
+        ''' Zoom in along the time axis.
+        '''
+        if ratio is None:
+            ratio = self.pref_manager.get_value('zoom ratio')
+        self.parent.shrinkTimePeriod(ratio = ratio)
+
+
+    def on_zoom_out(self, evt = None, ratio = None):
+        ''' Zoom out along the time axis.
+        '''
+        if ratio is None:
+            ratio = self.pref_manager.get_value('zoom ratio')
+        self.parent.growTimePeriod(ratio = ratio)
 
 
     def activate(self):
         ''' Activate the plugin.
         '''
         InteractivePlugin.activate(self)
-        self.parent.shortcut_manager.add_shortcut(origin_rid = self.rid,
-                                                  key_combination = ('WXK_DOWN',),
-                                                  action = self.parent.displayManager.show_next_station)
+
+        # Primary shortcuts registered for status bar tips
         self.parent.shortcut_manager.add_shortcut(origin_rid = self.rid,
                                                   key_combination = ('WXK_UP',),
-                                                  action = self.parent.displayManager.show_prev_station)
+                                                  action = self.on_zoom_in)
         self.parent.shortcut_manager.add_shortcut(origin_rid = self.rid,
-                                                  key_combination = ('WXK_RIGHT',),
-                                                  action = self.parent.advanceTime)
-        self.parent.shortcut_manager.add_shortcut(origin_rid = self.rid,
-                                                  key_combination = ('WXK_SHIFT', 'WXK_RIGHT'),
-                                                  action = self.parent.advanceTimePercentage,
-                                                  action_kwargs = {'step': 25})
-        self.parent.shortcut_manager.add_shortcut(origin_rid = self.rid,
-                                                  key_combination = ('WXK_COMMAND', 'WXK_RIGHT'),
-                                                  action = self.parent.advanceTimePercentage,
-                                                  action_kwargs = {'step': 10})
-        self.parent.shortcut_manager.add_shortcut(origin_rid = self.rid,
-                                                  key_combination = ('WXK_ALT', 'WXK_RIGHT'),
-                                                  action = self.parent.advanceTimePercentage,
-                                                  action_kwargs = {'step': 1})
+                                                  key_combination = ('WXK_DOWN',),
+                                                  action = self.on_zoom_out)
         self.parent.shortcut_manager.add_shortcut(origin_rid = self.rid,
                                                   key_combination = ('WXK_LEFT',),
                                                   action = self.parent.decreaseTime)
         self.parent.shortcut_manager.add_shortcut(origin_rid = self.rid,
-                                                  key_combination = ('WXK_SHIFT', 'WXK_LEFT'),
-                                                  action = self.parent.decreaseTimePercentage,
-                                                  action_kwargs = {'step': 25})
+                                                  key_combination = ('WXK_RIGHT',),
+                                                  action = self.parent.advanceTime)
         self.parent.shortcut_manager.add_shortcut(origin_rid = self.rid,
-                                                  key_combination = ('WXK_COMMAND', 'WXK_LEFT'),
-                                                  action = self.parent.decreaseTimePercentage,
-                                                  action_kwargs = {'step': 10})
+                                                  key_combination = ('"z"',),
+                                                  action = lambda: None)
         self.parent.shortcut_manager.add_shortcut(origin_rid = self.rid,
-                                                  key_combination = ('WXK_ALT', 'WXK_LEFT'),
-                                                  action = self.parent.decreaseTimePercentage,
-                                                  action_kwargs = {'step': 1})
+                                                  key_combination = ('Ctrl+Z',),
+                                                  action = getattr(self.parent, 'undo_zoom', lambda: None))
 
 
     def deactivate(self):

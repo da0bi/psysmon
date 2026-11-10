@@ -96,6 +96,10 @@ class DockingFrame(wx.Frame):
                                         description = 'The matplotlib button_release_event in the view axes.')
         self.hook_manager.add_view_hook(name = 'motion_notify_event',
                                         description = 'The matplotlib motion_notify_event in the view axes.')
+        self.hook_manager.add_view_hook(name = 'key_press_event',
+                                        description = 'The matplotlib key_press_event in the view axes.')
+        self.hook_manager.add_view_hook(name = 'key_release_event',
+                                        description = 'The matplotlib key_release_event in the view axes.')
 
 
         self.Bind(wx.EVT_SET_FOCUS, self.on_set_focus)

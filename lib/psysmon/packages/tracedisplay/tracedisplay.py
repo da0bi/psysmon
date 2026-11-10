@@ -344,6 +344,26 @@ class TraceDisplayEditDlg(wx.Frame):
 
 
 
+class TraceDisplayKeyFilter(wx.EventFilter):
+    ''' Global event filter to reliably intercept key-up events across all child controls.
+    Ensures hold-to-zoom release of 'z' is never swallowed by child widgets or canvases.
+    '''
+    def __init__(self, dlg):
+        super(TraceDisplayKeyFilter, self).__init__()
+        self.dlg = dlg
+
+    def FilterEvent(self, event):
+        if event.GetEventType() == wx.wxEVT_KEY_UP:
+            keyCode = event.GetKeyCode()
+            if keyCode in [ord('Z'), ord('z')]:
+                if hasattr(self.dlg, 'plugin_to_restore') and self.dlg.plugin_to_restore is not None:
+                    try:
+                        self.dlg.on_key_up(event)
+                    except Exception:
+                        pass
+        return wx.EventFilter.Event_Skip
+
+
 class TraceDisplayDlg(psysmon.gui.docking_frame.DockingFrame):
     ''' The TraceDisplay main window.
 
@@ -419,6 +439,14 @@ class TraceDisplayDlg(psysmon.gui.docking_frame.DockingFrame):
         # A temporary plugin register to swap two plugins.
         self.plugin_to_restore = None
 
+        # Register global event filter for reliable hold-to-zoom key-up interception
+        self._key_filter = TraceDisplayKeyFilter(self)
+        wx.EvtHandler.AddFilter(self._key_filter)
+
+        # Zoom history stack for multi-level zoom undo/reset.
+        self.zoom_history = []
+        self.max_zoom_history = 3
+
         # Update the display to create all necessary containers.
         self.update_display()
 
@@ -491,6 +519,12 @@ class TraceDisplayDlg(psysmon.gui.docking_frame.DockingFrame):
                            handler = self.on_deactivate_tool,
                            accelerator_string = 'ESC')
 
+        self.add_menu_item(parent_menu = 'Control',
+                           title = 'Undo Zoom',
+                           help_string = "Step backward through interactive zoom history.",
+                           handler = lambda evt: self.undo_zoom(),
+                           accelerator_string = 'CTRL+Z')
+
         
         # Initialize the menubar using the loaded plugins.
         self.init_menus()
@@ -520,6 +554,35 @@ class TraceDisplayDlg(psysmon.gui.docking_frame.DockingFrame):
 
         # Tell the docking manager to commit all changes.
         self.mgr.Update()
+
+        self.Bind(wx.EVT_CHAR_HOOK, self.on_char_hook)
+        self.Bind(wx.EVT_KEY_UP, self.on_key_up)
+        self.Bind(wx.EVT_ACTIVATE, self.on_activate)
+
+
+    def on_activate(self, event):
+        ''' Handle window activation/deactivation.
+        Restore the previous tool if the window loses focus while hold-to-zoom is active.
+        '''
+        if not event.GetActive():
+            if self.plugin_to_restore is not None:
+                zoom_plugin = self.get_plugin('zoom')
+                if zoom_plugin and getattr(zoom_plugin, 'in_drag', False):
+                    zoom_plugin.cleanup()
+                self.restore_tool()
+        event.Skip()
+
+
+    def Destroy(self):
+        ''' Clean up resources before destroying the window.
+        '''
+        if hasattr(self, '_key_filter') and self._key_filter is not None:
+            try:
+                wx.EvtHandler.RemoveFilter(self._key_filter)
+            except Exception:
+                pass
+            self._key_filter = None
+        return super(TraceDisplayDlg, self).Destroy()
 
 
     def on_deactivate_tool(self, event):
@@ -598,67 +661,175 @@ class TraceDisplayDlg(psysmon.gui.docking_frame.DockingFrame):
         self.update_display()
 
 
-    def swap_tool(self):
+    def is_text_control_focused(self):
+        ''' Check if a text input control currently has keyboard focus.
+        '''
+        focused = wx.Window.FindFocus()
+        if focused is None:
+            return False
+        if isinstance(focused, (wx.TextCtrl, wx.SearchCtrl)):
+            return True
+        class_name = focused.__class__.__name__
+        if any(term in class_name for term in ['Text', 'Spin', 'Picker']):
+            return True
+        return False
+
+
+    def get_plugin(self, name):
+        ''' Get a plugin instance by its name.
+        '''
+        plugins = [x for x in self.plugins if x.name == name]
+        return plugins[0] if plugins else None
+
+
+    def get_active_interactive_plugin(self):
+        ''' Get the currently active interactive plugin, or None.
+        '''
+        active = [x for x in self.plugins if x.active is True and x.mode == 'interactive']
+        return active[0] if active else None
+
+
+    def on_char_hook(self, event):
+        ''' Intercept key presses to support press-and-hold interactions like 'z'
+        and combined navigation/zoom arrow keys.
+        '''
+        if self.is_text_control_focused():
+            event.Skip()
+            return
+
+        keyCode = event.GetKeyCode()
+
+        cmd_down = event.CmdDown() if hasattr(event, 'CmdDown') else False
+        ctrl_down = event.ControlDown() or cmd_down
+
+        # Escape key: cancel active drag and restore swapped tool
+        if keyCode == wx.WXK_ESCAPE:
+            zoom_plugin = self.get_plugin('zoom')
+            if zoom_plugin and getattr(zoom_plugin, 'in_drag', False):
+                zoom_plugin.cleanup()
+            if self.plugin_to_restore is not None:
+                self.restore_tool()
+                return
+
+        # Ctrl+Z / Cmd+Z: Undo / reset last zoom step from anywhere
+        if keyCode in [ord('Z'), ord('z')] and ctrl_down and not event.ShiftDown():
+            if self.undo_zoom():
+                return
+
+        # Shift+Z: Permanently switch to the Zoom tool from anywhere
+        if keyCode in [ord('Z'), ord('z')] and event.ShiftDown():
+            zoom_plugin = self.get_plugin('zoom')
+            if zoom_plugin:
+                self.activate_interactive_tool(zoom_plugin)
+            return
+
+        active_plugin = self.get_active_interactive_plugin()
+
+        # Combined Zoom & Navigate interactions (strictly active when Navigate is active)
+        if active_plugin and active_plugin.name == 'navigate':
+            # Plain Z: Temporary hold-to-zoom
+            if keyCode in [ord('Z'), ord('z')] and not ctrl_down and not event.AltDown():
+                self.swap_tool('zoom')
+                return
+
+            # Arrow keys: Navigate time or zoom
+            if keyCode == wx.WXK_UP:
+                ratio = 1 if event.AltDown() else (10 if event.ControlDown() else (25 if event.ShiftDown() else None))
+                active_plugin.on_zoom_in(ratio = ratio)
+                return
+            elif keyCode == wx.WXK_DOWN:
+                ratio = 1 if event.AltDown() else (10 if event.ControlDown() else (25 if event.ShiftDown() else None))
+                active_plugin.on_zoom_out(ratio = ratio)
+                return
+            elif keyCode == wx.WXK_LEFT:
+                step = 1 if event.AltDown() else (10 if event.ControlDown() else (25 if event.ShiftDown() else 100))
+                active_plugin.on_time_regress(evt = None, step = step)
+                return
+            elif keyCode == wx.WXK_RIGHT:
+                step = 1 if event.AltDown() else (10 if event.ControlDown() else (25 if event.ShiftDown() else 100))
+                active_plugin.on_time_advance(evt = None, step = step)
+                return
+
+        event.Skip()
+
+
+    def on_key_up(self, event):
+        ''' Handle key releases to restore tool state when 'z' is released.
+        '''
+        keyCode = event.GetKeyCode()
+        if keyCode in [ord('Z'), ord('z')]:
+            if self.plugin_to_restore is not None:
+                zoom_plugin = self.get_plugin('zoom')
+                if zoom_plugin and getattr(zoom_plugin, 'in_drag', False):
+                    zoom_plugin.restore_on_release = True
+                else:
+                    self.restore_tool()
+                return
+        event.Skip()
+
+
+    def activate_interactive_tool(self, plugin):
+        ''' Permanently activate an interactive tool and synchronize UI state.
+        '''
+        self.plugin_to_restore = None
+        active_plugin = self.get_active_interactive_plugin()
+        if active_plugin is not None:
+            if active_plugin == plugin:
+                return
+            self.uncheck_menu_checkitem(active_plugin)
+            self.deactivate_interactive_plugin(active_plugin)
+        self.activate_interactive_plugin(plugin)
+        self.check_menu_checkitem(plugin)
+
+
+    def swap_tool(self, swap_tool_name = 'zoom'):
         ''' Swap the tool with one defined in the preferences.
         '''
         if self.plugin_to_restore is not None:
             return
 
-        swap_tool_name = 'zoom'
-
-        active_plugin = [x for x in self.plugins if x.active is True and x.mode == 'interactive']
-        if len(active_plugin) > 1:
-            raise RuntimeError('Only one interactive tool can be active.')
-        try:
-            active_plugin = active_plugin[0]
-        except:
-            active_plugin = None
+        active_plugin = self.get_active_interactive_plugin()
 
         if active_plugin is not None and active_plugin.name == swap_tool_name:
             # The swap tool is already active.
             return
 
-        swap_plugin = [x for x in self.plugins if x.name == swap_tool_name]
-        if len(swap_plugin) != 1:
+        swap_plugin = self.get_plugin(swap_tool_name)
+        if swap_plugin is None:
             raise RuntimeError("Can't find the swap plugin.")
-        swap_plugin = swap_plugin[0]
 
         self.plugin_to_restore = active_plugin
 
         if active_plugin:
+            self.uncheck_menu_checkitem(active_plugin)
             self.deactivate_interactive_plugin(active_plugin)
         self.activate_interactive_plugin(swap_plugin)
+        self.check_menu_checkitem(swap_plugin)
 
 
     def restore_tool(self):
-        ''' Restore a tool which was previousely swapped.
+        ''' Restore a tool which was previously swapped.
         '''
-        active_plugin = [x for x in self.plugins if x.active is True and x.mode == 'interactive']
-        if len(active_plugin) == 0:
+        active_plugin = self.get_active_interactive_plugin()
+        if active_plugin is None:
+            self.plugin_to_restore = None
             return
-        elif len(active_plugin) > 1:
-            raise RuntimeError('Only one interactive tool can be active.')
 
-        active_plugin = active_plugin[0]
+        self.uncheck_menu_checkitem(active_plugin)
         self.deactivate_interactive_plugin(active_plugin)
         if self.plugin_to_restore is not None:
             self.activate_interactive_plugin(self.plugin_to_restore)
+            self.check_menu_checkitem(self.plugin_to_restore)
             self.plugin_to_restore = None
 
 
     def deactivate_tool(self):
         ''' Deactivate the currently active interactive plugin.
         '''
-        active_plugin = [x for x in self.plugins if x.active is True and x.mode == 'interactive']
-
-        if len(active_plugin) == 0:
-            return
-        elif len(active_plugin) > 1:
-            raise RuntimeError('Only one interactive tool can be active.')
-
-        active_plugin = active_plugin[0]
-        self.uncheck_menu_checkitem(active_plugin)
-        self.deactivate_interactive_plugin(active_plugin)
+        active_plugin = self.get_active_interactive_plugin()
+        if active_plugin is not None:
+            self.uncheck_menu_checkitem(active_plugin)
+            self.deactivate_interactive_plugin(active_plugin)
 
 
 
@@ -713,8 +884,65 @@ class TraceDisplayDlg(psysmon.gui.docking_frame.DockingFrame):
 
         if target_start is not None and target_duration is not None:
             self.logger.debug("Resetting view to start: %s, duration: %s", target_start, target_duration)
+            if hasattr(self, 'clear_zoom_history'):
+                self.clear_zoom_history()
             self.displayManager.setTimeLimits(target_start, target_start + target_duration)
             self.update_display()
+
+
+    def push_zoom_history(self, start_time = None, end_time = None):
+        ''' Save the current or specified time limits onto the zoom history stack.
+        '''
+        if start_time is None:
+            start_time = self.displayManager.startTime
+        if end_time is None:
+            end_time = self.displayManager.endTime
+        if start_time is None or end_time is None:
+            return
+
+        nav_plugin = self.get_plugin('navigate')
+        max_depth = 3
+        if nav_plugin and len(nav_plugin.pref_manager) > 0:
+            try:
+                max_depth = nav_plugin.pref_manager.get_value('zoom_history_steps')
+            except Exception:
+                max_depth = 3
+
+        new_entry = (UTCDateTime(start_time), UTCDateTime(end_time))
+        if self.zoom_history and self.zoom_history[-1] == new_entry:
+            return
+
+        self.zoom_history.append(new_entry)
+        while len(self.zoom_history) > max_depth:
+            self.zoom_history.pop(0)
+
+
+    def undo_zoom(self):
+        ''' Restore the previous zoom state from the history stack.
+        '''
+        if not self.zoom_history:
+            return False
+
+        prev_start, prev_end = self.zoom_history.pop()
+        self.logger.debug("Undoing zoom to start: %s, end: %s", prev_start, prev_end)
+        self.displayManager.setTimeLimits(prev_start, prev_end)
+        self.update_display()
+        remaining = len(self.zoom_history)
+        if hasattr(self, 'statusbar') and self.statusbar is not None:
+            self.statusbar.set_shortcut_tips_msg("Zoom reset ({:d} remaining)".format(remaining))
+        return True
+
+
+    def has_zoom_history(self):
+        ''' Check if any zoom history entries exist.
+        '''
+        return len(self.zoom_history) > 0
+
+
+    def clear_zoom_history(self):
+        ''' Clear the zoom history stack.
+        '''
+        self.zoom_history.clear()
 
 
     def onKeyDown(self, event):
