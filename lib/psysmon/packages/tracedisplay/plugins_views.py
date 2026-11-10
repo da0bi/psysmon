@@ -968,9 +968,14 @@ class SpectrogramPlotter(ViewPlugin):
         self.accelerator_string = 'CTRL+E'
         self.pref_accelerator_string = 'ALT+E'
 
+        # State tracking for dynamic fmax and update recursion guard.
+        self._user_fmax_set = False
+        self._updating_pref = False
+
         # Add the plugin preferences.
         pref_page = self.pref_manager.add_page('Preferences')
         specgram_group = pref_page.add_group('specgram')
+        freq_group = pref_page.add_group('frequency range')
         display_group = pref_page.add_group('display')
 
         # The specgram window length.
@@ -1001,6 +1006,44 @@ class SpectrogramPlotter(ViewPlugin):
                                                         tool_tip = 'The mode of the amplitude scaling.')
         specgram_group.add_item(item)
 
+        # The minimum display frequency (fmin).
+        item = preferences_manager.FloatSpinPrefItem(name = 'fmin',
+                                                     label = 'fmin [Hz]',
+                                                     value = 0.0,
+                                                     limit = (0.0, None),
+                                                     digits = 1,
+                                                     increment = 1.0,
+                                                     hooks = {'on_value_change': self.on_pref_input_changed},
+                                                     tool_tip = 'Lower frequency limit for display in Hz (0.0 for lowest frequency bin).')
+        freq_group.add_item(item)
+
+        # The maximum display frequency (fmax).
+        item = preferences_manager.FloatSpinPrefItem(name = 'fmax',
+                                                     label = 'fmax [Hz]',
+                                                     value = 0.0,
+                                                     limit = (0.0, None),
+                                                     digits = 1,
+                                                     increment = 1.0,
+                                                     hooks = {'on_value_change': self.on_pref_input_changed},
+                                                     tool_tip = 'Upper frequency limit for display in Hz (0.0 or empty resets to trace Nyquist frequency).')
+        freq_group.add_item(item)
+
+        # The y-axis frequency resolution refinement.
+        item = preferences_manager.SingleChoicePrefItem(name = 'y_refinement',
+                                                        label = 'y-axis refinement',
+                                                        limit = ('1x (standard)', '2x', '4x', '8x'),
+                                                        value = '1x (standard)',
+                                                        tool_tip = 'Refine the vertical frequency resolution via FFT oversampling (zero-padding).')
+        freq_group.add_item(item)
+
+        # The process action button.
+        item = preferences_manager.ActionItem(name = 'process',
+                                              label = 'process',
+                                              mode = 'button',
+                                              action = self.on_process,
+                                              tool_tip = 'Calculate and update the spectrogram display with current preferences.')
+        freq_group.add_item(item)
+
         # The colormap.
         item = preferences_manager.SingleChoicePrefItem(name = 'cmap',
                                                         label = 'colormap',
@@ -1009,10 +1052,106 @@ class SpectrogramPlotter(ViewPlugin):
                                                         tool_tip = 'The colormap used to color the spectrogram.')
         display_group.add_item(item)
 
+    def get_nyquist_frequency(self, stream = None):
+        ''' Get the Nyquist frequency from the available traces.
+        '''
+        if stream is None and hasattr(self, 'parent') and self.parent is not None:
+            dm = getattr(self.parent, 'dataManager', None)
+            if dm is not None:
+                stream = getattr(dm, 'procStream', None) or getattr(dm, 'origStream', None)
+
+        if stream is not None and len(stream) > 0:
+            rates = [
+                float(tr.stats.sampling_rate)
+                for tr in stream
+                if hasattr(tr, 'stats') and hasattr(tr.stats, 'sampling_rate') and tr.stats.sampling_rate
+            ]
+            if rates:
+                return max(rates) / 2.0
+        return None
+
+
+    def update_nyquist_fmax(self, stream = None, force = False):
+        ''' Synchronize fmax preference with trace Nyquist frequency if unchanged or requested.
+        '''
+        nyquist = self.get_nyquist_frequency(stream)
+        if nyquist is None or nyquist <= 0.0:
+            return
+
+        cur_fmax = self.pref_manager.get_value('fmax')
+        if force or not self._user_fmax_set or cur_fmax is None or cur_fmax <= 0.0:
+            self._updating_pref = True
+            try:
+                self.pref_manager.set_value('fmax', nyquist)
+            finally:
+                self._updating_pref = False
+
+
+    def buildFoldPanel(self, panelBar):
+        ''' Create the foldpanel GUI, ensuring fmax shows the current Nyquist frequency.
+        '''
+        self.update_nyquist_fmax()
+        return ViewPlugin.buildFoldPanel(self, panelBar)
+
+
+    def on_pref_input_changed(self):
+        ''' Soft validation when user changes values in preference GUI (no redraw).
+        '''
+        if getattr(self, '_updating_pref', False):
+            return
+
+        self._updating_pref = True
+        try:
+            fmin = self.pref_manager.get_value('fmin')
+            fmax = self.pref_manager.get_value('fmax')
+            nyquist = self.get_nyquist_frequency()
+
+            # Clamp negative fmin to 0.0
+            if fmin is not None and fmin < 0.0:
+                self.pref_manager.set_value('fmin', 0.0)
+
+            # Auto-reset to Nyquist if fmax is 0.0 or empty
+            if fmax is None or fmax <= 0.0:
+                self._user_fmax_set = False
+                if nyquist is not None and nyquist > 0.0:
+                    self.pref_manager.set_value('fmax', nyquist)
+            elif nyquist is not None and fmax > nyquist:
+                # Clamp fmax > Nyquist to Nyquist
+                self._user_fmax_set = False
+                self.pref_manager.set_value('fmax', nyquist)
+            elif nyquist is not None and abs(fmax - nyquist) < 1e-4:
+                self._user_fmax_set = False
+            else:
+                self._user_fmax_set = True
+        finally:
+            self._updating_pref = False
+
+
+    def on_process(self, event = None):
+        ''' Process and update the spectrogram display with current preferences.
+        '''
+        self.on_pref_input_changed()
+        if hasattr(self, 'parent') and self.parent is not None:
+            dm = getattr(self.parent, 'displayManager', None)
+            data_mgr = getattr(self.parent, 'dataManager', None)
+            if dm is not None and data_mgr is not None and getattr(data_mgr, 'procStream', None):
+                # Fast-path: directly re-plot only spectrogram views from existing procStream
+                self.plot(dm, data_mgr)
+            else:
+                self.parent.update_display()
+
+
+    def on_pref_changed(self):
+        ''' Alias for on_process for backwards compatibility.
+        '''
+        self.on_process()
+
+
     def plot(self, displayManager, dataManager):
         ''' Plot all available stations.
 
         '''
+        self.update_nyquist_fmax(dataManager.procStream)
         self.plotStation(displayManager, dataManager, displayManager.showStations)
 
 
@@ -1030,6 +1169,11 @@ class SpectrogramPlotter(ViewPlugin):
 
         '''
         stream = dataManager.procStream
+
+        # Resolve refinement multiplier
+        refinement = self.pref_manager.get_value('y_refinement')
+        multiplier_map = {'1x (standard)': 1, '2x': 2, '4x': 4, '8x': 8}
+        pad_factor = multiplier_map.get(refinement, 1) if isinstance(refinement, str) else (int(refinement) if refinement else 1)
 
         for curChannel in channels:
             views = displayManager.getViewContainer(station = curChannel.parent.name,
@@ -1049,7 +1193,10 @@ class SpectrogramPlotter(ViewPlugin):
                                  win_length = self.pref_manager.get_value('win_length'),
                                  overlap = self.pref_manager.get_value('overlap'),
                                  amp_mode = self.pref_manager.get_value('amplitude_mode'),
-                                 cmap = self.pref_manager.get_value('cmap'))
+                                 cmap = self.pref_manager.get_value('cmap'),
+                                 fmin = self.pref_manager.get_value('fmin'),
+                                 fmax = self.pref_manager.get_value('fmax'),
+                                 pad_factor = pad_factor)
 
                 curView.setXLimits(left = displayManager.startTime.timestamp,
                                    right = displayManager.endTime.timestamp)
@@ -1084,7 +1231,8 @@ class SpectrogramView(psy_view.viewnode.ViewNode):
         self.axes.get_yaxis().set_visible(False)
 
 
-    def plot(self, stream, win_length = 1.0, overlap = 0.5, amp_mode = 'normal', cmap = 'viridis'):
+    def plot(self, stream, win_length = 1.0, overlap = 0.5, amp_mode = 'normal', cmap = 'viridis',
+             fmin = 0.0, fmax = 0.0, pad_factor = 1):
         for trace in stream:
             timeArray = np.arange(0, trace.stats.npts)
             timeArray = timeArray / trace.stats.sampling_rate
@@ -1109,7 +1257,10 @@ class SpectrogramView(psy_view.viewnode.ViewNode):
                              wlen = win_length,
                              overlap = overlap,
                              amp_mode = amp_mode,
-                             cmap = cmap)
+                             cmap = cmap,
+                             fmin = fmin,
+                             fmax = fmax,
+                             pad_factor = pad_factor)
 
         self.axes.set_frame_on(False)
         self.axes.get_xaxis().set_visible(False)
@@ -1117,49 +1268,114 @@ class SpectrogramView(psy_view.viewnode.ViewNode):
 
 
     def spectrogram(self, data, samp_rate, wlen, overlap = 0.9, amp_mode = 'normal',
-                    clip=[0.0, 1.0], start_time = 0, cmap = 'viridis'):
+                    clip=[0.0, 1.0], start_time = 0, cmap = 'viridis',
+                    fmin = 0.0, fmax = 0.0, pad_factor = 1):
         samp_rate = float(samp_rate)
         wlen = float(wlen)
         overlap = float(overlap)
 
         nfft = int(psysmon.core.signal.nearest_pow_2(wlen * samp_rate))
+        pad_factor = int(pad_factor) if pad_factor is not None else 1
+        pad_to = int(nfft * pad_factor) if pad_factor > 1 else None
 
-        specgram, freq, time = mpl.mlab.specgram(data,
-                                                 Fs = samp_rate,
-                                                 NFFT = nfft,
-                                                 noverlap = int(nfft *  overlap))
+        # Pad input if shorter than window length
+        if len(data) < nfft:
+            data = np.pad(data, (0, nfft - len(data)), mode='constant')
 
-        # Save the frequency and time array in the instance.
+        freq, time, specgram = scipy.signal.spectrogram(
+            data,
+            fs = samp_rate,
+            window = np.hanning(nfft),
+            nperseg = nfft,
+            noverlap = int(nfft * overlap),
+            nfft = pad_to,
+            detrend = False,
+            mode = 'psd',
+            scaling = 'density'
+        )
+
+        # Save the full frequency and time array in the instance.
         self.freq = freq
         self.time = start_time + time
 
         # calculate half bin width
-        halfbin_time = (time[1] - time[0]) / 2.0
-        halfbin_freq = (freq[1] - freq[0]) / 2.0
+        halfbin_time = (time[1] - time[0]) / 2.0 if len(time) > 1 else (wlen / 2.0)
+        halfbin_freq = (freq[1] - freq[0]) / 2.0 if len(freq) > 1 else (samp_rate / 2.0)
 
-        # Apply the amplitude mode and remove the frequency 0 bin.
-        if amp_mode == 'normal':
-            specgram = np.sqrt(specgram[1:, :])
-        elif amp_mode == 'dB':
-            specgram = 10 * np.log10(specgram[1:, :])
-        elif amp_mode == 'square':
-            specgram = specgram[1:, :]
-        else:
-            raise ValueError("Value %s for amp_mode not allowed." % amp_mode)
+        # Remove the frequency 0 (DC) bin.
+        specgram = specgram[1:, :]
         self.freq = self.freq[1:]
 
-        # Compute the image extent.
+        # Frequency range filtering (slicing before amplitude mode conversion).
+        nyquist = samp_rate / 2.0
+        low_frequ = float(fmin) if (fmin is not None and fmin > 0.0) else None
+        high_frequ = float(fmax) if (fmax is not None and fmax > 0.0) else None
+
+        # Clamp high_frequ to trace Nyquist frequency
+        if high_frequ is not None and high_frequ > nyquist:
+            high_frequ = nyquist
+
+        # Fallback if fmin >= fmax
+        if low_frequ is not None and high_frequ is not None and low_frequ >= high_frequ:
+            self.logger.warning("fmin (%.1f Hz) must be smaller than fmax (%.1f Hz). Using full frequency range.",
+                                low_frequ, high_frequ)
+            low_frequ = None
+            high_frequ = None
+
+        # Slice frequency bins overlapping [low_frequ, high_frequ]
+        mask = np.ones(len(self.freq), dtype=bool)
+        if low_frequ is not None:
+            mask &= (self.freq + halfbin_freq >= low_frequ)
+        if high_frequ is not None:
+            mask &= (self.freq - halfbin_freq <= high_frequ)
+
+        if np.any(mask):
+            specgram = specgram[mask, :]
+            self.freq = self.freq[mask]
+        else:
+            self.logger.warning("Specified frequency range contains no bins. Using full range.")
+            low_frequ = None
+            high_frequ = None
+
+        # Apply the amplitude mode on the sliced frequency band.
+        if amp_mode == 'normal':
+            specgram = np.sqrt(specgram)
+        elif amp_mode == 'dB':
+            specgram = 10 * np.log10(np.maximum(specgram, 1e-20))
+        elif amp_mode == 'square':
+            pass
+        else:
+            raise ValueError("Value %s for amp_mode not allowed." % amp_mode)
+
+        # Compute the image extent over the full time span.
         extent = (self.time[0] - halfbin_time, self.time[-1] + halfbin_time,
                   self.freq[0] - halfbin_freq, self.freq[-1] + halfbin_freq)
 
+        # Decimate along time axis for screen display if number of columns exceeds limit
+        max_display_cols = 3000
+        n_cols = specgram.shape[1]
+        if n_cols > max_display_cols:
+            step = int(np.ceil(n_cols / max_display_cols))
+            indices = np.arange(0, n_cols, step)
+            specgram_disp = np.maximum.reduceat(specgram, indices, axis=1)
+        else:
+            specgram_disp = specgram
+
         # Show the spectrogram as an image.
         #cmap = obspy.imaging.cm.obspy_sequential
-        self.axes.imshow(specgram,
+        self.axes.imshow(specgram_disp,
                          interpolation = 'nearest',
                          origin = 'lower',
                          extent = extent,
                          aspect = 'auto',
                          cmap = cmap)
+
+        # Zoom the y-axis into the specified frequency range.
+        y_bottom = max(low_frequ, extent[2]) if low_frequ is not None else extent[2]
+        y_top = min(high_frequ, extent[3]) if high_frequ is not None else extent[3]
+        if y_bottom < y_top:
+            self.axes.set_ylim(bottom = y_bottom, top = y_top)
+
         # TODO: Add an option to select logarithmic scaling.
         #self.axes.set_yscale('log')
 
